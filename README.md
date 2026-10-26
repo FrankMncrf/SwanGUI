@@ -36,25 +36,34 @@ Si encuentras un problema de seguridad, consulta [SECURITY.md](SECURITY.md).
 
 ## Instalación
 
-### Arch Linux, CachyOS, Manjaro, EndeavourOS (AUR)
+Descarga el paquete de tu distribución desde la [última versión](https://github.com/FrankMncrf/SwanGUI/releases/latest):
 
-```sh
-yay -S swangui        # o: paru -S swangui
-```
+| Distribución | Paquete |
+|---|---|
+| Debian 12+ / Ubuntu 24.04+ | [swangui_1.0.0-1_all.deb](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.0/swangui_1.0.0-1_all.deb) |
+| Fedora | [swangui-1.0.0-1.fc44.noarch.rpm](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.0/swangui-1.0.0-1.fc44.noarch.rpm) |
+| Arch Linux, CachyOS, Manjaro, EndeavourOS | [swangui-1.0.0-1-any.pkg.tar.zst](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.0/swangui-1.0.0-1-any.pkg.tar.zst) · [PKGBUILD](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.0/PKGBUILD) |
+| Sumas de verificación | [SHA256SUMS](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.0/SHA256SUMS) |
 
 ### Debian / Ubuntu
 
-Descarga el `.deb` de la [última versión](https://github.com/FrankMncrf/SwanGUI/releases/latest):
-
 ```sh
-sudo apt install ./swangui_*_all.deb
+sudo apt install ./swangui_1.0.0-1_all.deb
 ```
 
-### Fedora / openSUSE / RHEL
+### Fedora
 
 ```sh
-sudo dnf install ./swangui-*.noarch.rpm
+sudo dnf install ./swangui-1.0.0-1.fc44.noarch.rpm
 ```
+
+### Arch Linux y derivadas
+
+```sh
+sudo pacman -U swangui-1.0.0-1-any.pkg.tar.zst
+```
+
+O constrúyelo tú con el `PKGBUILD`: `makepkg -si`. Pronto también en AUR (`yay -S swangui`).
 
 ### Desde el código
 
@@ -97,4 +106,4 @@ SwanGUI is a tray application to create, edit, import/export, connect and monito
 
 Import/export formats: FortiClient, strongSwan swanctl, MikroTik RouterOS, pfSense/OPNsense, Windows PowerShell, Cisco IOS, Apple .mobileconfig and strongSwan for Android (.sswan), optionally **password-encrypted** (scrypt + AES-256-GCM).
 
-Privileged work goes through a small helper started with **pkexec**: routine operations need no password, while anything that changes the configuration or can reveal secrets requires the administrator password. Installation instructions are above (AUR `swangui`, `.deb`, `.rpm` or `./install.sh`). The interface follows your locale (Spanish or English) and can be changed in Preferences.
+Privileged work goes through a small helper started with **pkexec**: routine operations need no password, while anything that changes the configuration or can reveal secrets requires the administrator password. Packages for Debian/Ubuntu (`.deb`), Fedora (`.rpm`) and Arch (`.pkg.tar.zst`, `PKGBUILD`) are on the [releases page](https://github.com/FrankMncrf/SwanGUI/releases/latest); see the table above. AUR coming soon. The interface follows your locale (Spanish or English) and can be changed in Preferences.
