@@ -1,5 +1,10 @@
 # Novedades
 
+## 1.0.3 — 2026-10-26
+
+- Ya no aparece la ventana de contraseña de administrador al volver de una suspensión: SwanGUI deja de consultar el estado de la VPN mientras el equipo se suspende o la sesión no está activa, y reanuda las consultas al despertar.
+- Nuevo enlace de Buy Me a Coffee: https://buymeacoffee.com/frankmncrf
+
 ## 1.0.2 — 2026-10-25
 
 - Al dejar el puntero sobre el icono de la bandeja aparece una tarjeta con los detalles de cada conexión: círculo con el color del estado, calidad (latencia y pérdidas), IP virtual, servidor, tiempo conectado, recibido/enviado, velocidad, redes remotas, DNS, próxima renegociación y aviso de caducidad del certificado.

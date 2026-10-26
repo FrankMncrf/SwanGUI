@@ -67,6 +67,19 @@ class AppStartTests(unittest.TestCase):
         app.cert_timer.stop()
         app.card.timer.stop()
 
+    def test_no_helper_while_suspending(self):
+        app = g.SwanGUI.__new__(g.SwanGUI)
+        app.sleeping, app.login1, app.polling = True, None, False
+        calls = []
+        app._check_resume = lambda: calls.append("resume")
+        app.helper = type("H", (), {"run": lambda self, args, cb, stdin=None: calls.append(args[0])})()
+        g.SwanGUI.poll(app)
+        g.SwanGUI.check_certs(app)
+        self.assertEqual(calls, [])
+        app.sleeping = False
+        g.SwanGUI.poll(app)
+        self.assertEqual(calls, ["resume", "status"])
+
     def test_quality(self):
         app = g.SwanGUI.__new__(g.SwanGUI)
         app.samples = {"a": [(i, 0, 0, 300.0 if i % 2 else None) for i in range(15)],

@@ -1,6 +1,6 @@
 # Maintainer: Frank <frank@swangui.invalid>
 pkgname=swangui
-pkgver=1.0.2
+pkgver=1.0.3
 pkgrel=1
 pkgdesc="FortiClient-style IPsec VPN client for strongSwan, with tray icon"
 arch=('any')

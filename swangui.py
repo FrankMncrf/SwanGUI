@@ -20,13 +20,17 @@ import xml.etree.ElementTree as ET
 
 from PyQt6.QtCore import (
     QLibraryInfo, QLocale, QObject, QPointF, QProcess, QRect, QSize, Qt, QTimer, QTranslator,
-    pyqtSignal,
+    pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtGui import (
     QAction, QColor, QCursor, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
     QPixmap,
 )
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+try:
+    from PyQt6.QtDBus import QDBusConnection, QDBusInterface, QDBusMessage
+except ImportError:  # without QtDBus SwanGUI keeps polling through suspend, as before
+    QDBusConnection = QDBusInterface = QDBusMessage = None
 from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog,
@@ -3385,12 +3389,12 @@ class LogWindow(QDialog):
 # help menu: about, project links, bug reports, donations, updates
 # ---------------------------------------------------------------------------
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 REPO_URL = "https://github.com/FrankMncrf/SwanGUI"
 RELEASES_API = "https://api.github.com/repos/FrankMncrf/SwanGUI/releases/latest"
 # donation targets; an empty value hides that option
 DONATE = {
-    "bmc": "https://buymeacoffee.com/FrankMncrf",
+    "bmc": "https://buymeacoffee.com/frankmncrf",
     "paypal": "",
     "btc": "bc1qm45kpx35uazdts3q8vc77edqwyajuxe9cexw0er5409dyevl3nysxhln9g",
 }
@@ -4330,6 +4334,14 @@ class SwanGUI(QObject):
         self.cert_timer = QTimer(self)
         self.cert_timer.timeout.connect(self.check_certs)
         self.cert_timer.start(3600 * 1000)
+        self.sleeping = False
+        self.login1 = None
+        if QDBusConnection is not None:
+            bus = QDBusConnection.systemBus()
+            bus.connect("org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager",
+                        "PrepareForSleep", self._prepare_for_sleep)
+            self.login1 = QDBusInterface("org.freedesktop.login1", "/org/freedesktop/login1/session/auto",
+                                         "org.freedesktop.DBus.Properties", bus)
         self.poll()
         QTimer.singleShot(5000, self.check_certs)
         QTimer.singleShot(30000, self.help.maybe_auto_check)
@@ -4353,7 +4365,27 @@ class SwanGUI(QObject):
     def on_trusted_network(self):
         return self.trusted_now
 
+    def session_active(self):
+        """Routine helper commands only skip the password in an active session (49-swangui.rules):
+        while suspending, or on another VT, pkexec would leave a password dialog waiting."""
+        if self.sleeping:
+            return False
+        if self.login1 is None:
+            return True
+        reply = self.login1.call("Get", "org.freedesktop.login1.Session", "Active")
+        if reply.type() != QDBusMessage.MessageType.ReplyMessage or not reply.arguments():
+            return True  # not in a logind session: behave as before
+        return bool(reply.arguments()[0])
+
+    @pyqtSlot(bool)
+    def _prepare_for_sleep(self, start):
+        self.sleeping = start
+        if not start:
+            QTimer.singleShot(3000, self.poll)
+
     def poll(self):
+        if not self.session_active():
+            return
         self._check_resume()
         if self.polling:
             return
@@ -4471,6 +4503,9 @@ class SwanGUI(QObject):
         return int((min(c["not_after"] for c in found) - time.time()) // 86400)
 
     def check_certs(self):
+        if not self.session_active():
+            return
+
         def done(data):
             if "error" in data:
                 return

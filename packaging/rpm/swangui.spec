@@ -1,5 +1,5 @@
 Name:           swangui
-Version:        1.0.2
+Version:        1.0.3
 Release:        1%{?dist}
 Summary:        FortiClient-style IPsec VPN client for strongSwan
 License:        GPL-3.0-or-later
@@ -46,6 +46,9 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix} LIBDIR=%{_prefix}/lib/swangu
 %{_licensedir}/%{name}/
 
 %changelog
+* Mon Oct 26 2026 Frank <frank@swangui.invalid> - 1.0.3-1
+- No password prompt after suspend; new Buy Me a Coffee link
+
 * Sun Oct 25 2026 Frank <frank@swangui.invalid> - 1.0.2-1
 - Connection details card when hovering over the tray icon
 
