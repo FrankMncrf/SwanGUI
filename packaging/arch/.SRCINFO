@@ -1,6 +1,6 @@
 pkgbase = swangui
 	pkgdesc = FortiClient-style IPsec VPN client for strongSwan, with tray icon
-	pkgver = 1.0.2
+	pkgver = 1.0.3
 	pkgrel = 1
 	url = https://github.com/FrankMncrf/SwanGUI
 	arch = any
@@ -19,7 +19,7 @@ pkgbase = swangui
 	optdepends = libsecret: keep user passwords in the system keyring
 	optdepends = networkmanager: trusted networks and captive portal detection
 	optdepends = polkit-gnome: authentication agent for desktops without one
-	source = swangui-1.0.2.tar.gz::https://github.com/FrankMncrf/SwanGUI/archive/refs/tags/v1.0.2.tar.gz
-	sha256sums = 31b2dea8a6791e08168bfb7fb3974f3d75e8bcec78c4910ed995d85a8639054f
+	source = swangui-1.0.3.tar.gz::https://github.com/FrankMncrf/SwanGUI/archive/refs/tags/v1.0.3.tar.gz
+	sha256sums = 9f96bc2593a703b8f08ab512670ec55ae27299380089885450c80b28d02fe014
 
 pkgname = swangui
