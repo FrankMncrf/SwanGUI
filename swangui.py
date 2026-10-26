@@ -3100,6 +3100,12 @@ class PrefsDialog(QDialog):
         g.addRow("", self.autostart)
         g.addRow("", self.start_hidden)
         g.addRow("", self.notify)
+        self.notify_style = combo([("balloon", tr("Globo de SwanGUI junto al icono")),
+                                   ("system", tr("Notificaciones del escritorio"))])
+        set_combo(self.notify_style, settings.data.get("notify_style", "balloon"))
+        self.notify.toggled.connect(self.notify_style.setEnabled)
+        self.notify_style.setEnabled(self.notify.isChecked())
+        g.addRow(tr("Estilo de los avisos:"), self.notify_style)
         g.addRow("", self.keyring)
         g.addRow(tr("Avisar caducidad de certificados:"), self.cert_days)
         self.tray_theme = combo([("auto", tr("Automático (según el tema)")), ("light", tr("Panel claro (borde oscuro)")),
@@ -3414,6 +3420,96 @@ def system_info(app):
         f"Keyring: {'yes' if app.settings.data.get('use_keyring') else 'no'} · "
         f"cryptography: {'yes' if crypto_available() else 'no'}",
     ])
+
+
+class Balloon(QWidget):
+    """SwanGUI's own notification bubble, drawn next to the tray icon (like FortiClient)."""
+    clicked = pyqtSignal()
+
+    def __init__(self):
+        super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint
+                         | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.icon = QLabel()
+        self.title = QLabel()
+        self.title.setStyleSheet("font-weight: bold")
+        self.text = QLabel()
+        self.text.setWordWrap(True)
+        self.text.setMinimumWidth(260)
+        self.text.setMaximumWidth(360)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.addWidget(self.title)
+        col.addWidget(self.text)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 12, 16, 12)
+        row.setSpacing(12)
+        row.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignTop)
+        row.addLayout(col)
+        self.accent = QColor(COLORS["up"])
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.hide)
+        self.click_pos = None  # where the user last clicked the tray, when Qt can't tell us the icon's place
+
+    def remember_click(self):
+        from PyQt6.QtGui import QCursor
+        self.click_pos = QCursor.pos()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pal = self.palette()
+        p.setPen(QPen(pal.mid().color(), 1))
+        p.setBrush(pal.window().color())
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self.accent)
+        p.drawRoundedRect(3, 10, 4, self.height() - 20, 2, 2)
+        p.end()
+
+    def mousePressEvent(self, _event):
+        self.hide()
+        self.clicked.emit()
+
+    def show_message(self, title, text, state, ms, anchor):
+        self.accent = QColor(COLORS.get(state, COLORS["up"]))
+        self.icon.setPixmap(shield_icon(state, 40).pixmap(40, 40))
+        self.title.setText(title)
+        self.text.setText(text)
+        self.adjustSize()
+        w, h = self.width(), self.height()
+        screen = (QGuiApplication.screenAt(anchor.center()) if anchor.isValid() else None) \
+            or QGuiApplication.primaryScreen()
+        avail, full = screen.availableGeometry(), screen.geometry()
+        margin = 8
+        if not (anchor.isValid() and anchor.width() > 0) and self.click_pos is not None:
+            from PyQt6.QtCore import QRect
+            near = QGuiApplication.screenAt(self.click_pos)
+            if near is not None:
+                g = near.geometry()
+                av = near.availableGeometry()
+                # only trust the click if it was on the panel strip
+                if self.click_pos.y() < av.top() or self.click_pos.y() > av.bottom():
+                    anchor = QRect(self.click_pos.x() - 8, g.top() if self.click_pos.y() < av.top() else av.bottom(),
+                                   16, (av.top() - g.top()) if self.click_pos.y() < av.top() else (g.bottom() - av.bottom()))
+                    screen, avail, full = near, av, g
+        if anchor.isValid() and anchor.width() > 0:
+            x = anchor.center().x() - w // 2
+            # panel at the bottom → above the icon, otherwise below it
+            y = anchor.top() - h - margin if anchor.center().y() > full.center().y() else anchor.bottom() + margin
+        else:
+            # no icon geometry (StatusNotifierItem): corner of the panel side
+            x = avail.right() - w - margin
+            y = avail.top() + margin if avail.top() > full.top() or avail.bottom() == full.bottom() \
+                else avail.bottom() - h - margin
+        x = max(avail.left() + margin, min(x, avail.right() - w - margin))
+        y = max(avail.top() + margin, min(y, avail.bottom() - h - margin))
+        self.move(x, y)
+        self.show()
+        self.raise_()
+        self.timer.start(max(2500, ms))
 
 
 class TextDialog(QDialog):
@@ -3974,6 +4070,10 @@ class SwanGUI(QObject):
         self.menu = QMenu()
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._tray_activated)
+        self.balloon = Balloon()
+        self.balloon.clicked.connect(self.show_window)
+        self.tray.activated.connect(lambda _reason: self.balloon.remember_click())
+        self.menu.aboutToShow.connect(self.balloon.remember_click)
         self.tray.show()
         self._build_menu()
 
@@ -4149,7 +4249,11 @@ class SwanGUI(QObject):
 
     # --- automation
     def _notify(self, text, state, ms=4000):
-        if self.settings.data.get("notifications", True):
+        if not self.settings.data.get("notifications", True):
+            return
+        if self.settings.data.get("notify_style", "balloon") == "balloon":
+            self.balloon.show_message(APP, text, state, ms, self.tray.geometry())
+        else:
             self.tray.showMessage(APP, text, shield_icon(state), ms)
 
     def _notify_changes(self):
@@ -4421,6 +4525,7 @@ class SwanGUI(QObject):
                 QMessageBox.warning(self.window, APP, tr("No se pudo cambiar el inicio automático:\n{0}").format(e))
             d = self.settings.data
             d["notifications"] = dlg.notify.isChecked()
+            d["notify_style"] = dlg.notify_style.currentData()
             d["start_hidden"] = dlg.start_hidden.isChecked()
             d["use_keyring"] = dlg.keyring.isChecked()
             d["cert_warn_days"] = dlg.cert_days.value()
@@ -4436,8 +4541,7 @@ class SwanGUI(QObject):
 
     def _error(self, title, msg, auto):
         hints = explain(msg)
-        if self.settings.data.get("notifications", True):
-            self.tray.showMessage(APP, f"{title}\n{(hints[0] if hints else msg)[:220]}", shield_icon("error"), 8000)
+        self._notify(f"{title}\n{(hints[0] if hints else msg)[:220]}", "error", 8000)
         self.log.append(title, msg + (tr("\n\nQué revisar:\n- ") + "\n- ".join(hints) if hints else ""))
         return hints
 

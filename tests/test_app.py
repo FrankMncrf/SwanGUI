@@ -35,6 +35,10 @@ class AppStartTests(unittest.TestCase):
         g.PrefsDialog(None, app.settings, ["office"])
         g.TextDialog(None, "x", "# y", markdown=True)
         self.assertIn("SwanGUI", g.system_info(app))
+        app.settings.data["notify_style"] = "balloon"
+        app._notify("Conectado a office", "up")
+        self.assertTrue(app.balloon.isVisible())
+        self.assertIn("office", app.balloon.text.text())
         app.timer.stop()
         app.cert_timer.stop()
 
