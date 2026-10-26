@@ -2,6 +2,7 @@
 """SwanGUI — cliente VPN IPsec (strongSwan/swanctl) al estilo FortiClient, en la bandeja del sistema."""
 import base64
 import hashlib
+import html
 import ipaddress
 import json
 import os
@@ -18,11 +19,11 @@ from collections import deque
 import xml.etree.ElementTree as ET
 
 from PyQt6.QtCore import (
-    QLibraryInfo, QLocale, QObject, QPointF, QProcess, QSize, Qt, QTimer, QTranslator,
+    QLibraryInfo, QLocale, QObject, QPointF, QProcess, QRect, QSize, Qt, QTimer, QTranslator,
     pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QAction, QColor, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
+    QAction, QColor, QCursor, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
     QPixmap,
 )
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
@@ -96,6 +97,7 @@ COLORS = {
     "down": "#8b949e",
     "error": "#da3633",
 }
+RX_COLOR, TX_COLOR, LAT_COLOR = "#2f81f7", "#f0883e", "#8b949e"  # received / sent, in the graphs and the tray card
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +117,8 @@ def _outline_color():
     return "#e6edf3" if mode == "dark" else "#1b1f24"
 
 
-def shield_icon(state, size=64):
+def shield_icon(state, size=64, count=0, dim=False):
+    """count > 1 draws a badge with the number of active tunnels; dim is the pulse frame while connecting."""
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
@@ -128,7 +131,7 @@ def shield_icon(state, size=64):
     path.cubicTo(17 * s, 52 * s, 8 * s, 36 * s, 8 * s, 13 * s)
     path.closeSubpath()
     p.setPen(QPen(QColor(_outline_color()), 2.5 * s))
-    p.setBrush(QColor(COLORS[state]))
+    p.setBrush(QColor(COLORS[state]).lighter(150) if dim else QColor(COLORS[state]))
     p.drawPath(path)
     p.setPen(QPen(QColor("white"), 5 * s, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
                   Qt.PenJoinStyle.RoundJoin))
@@ -148,6 +151,17 @@ def shield_icon(state, size=64):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor("white"))
         p.drawRoundedRect(int(22 * s), int(27 * s), int(20 * s), int(15 * s), 2 * s, 2 * s)
+    if count > 1:
+        p.setPen(QPen(QColor(_outline_color()), 2 * s))
+        p.setBrush(QColor("#1f6feb"))
+        p.drawEllipse(pt(46, 46, s), 15 * s, 15 * s)
+        f = QFont()
+        f.setBold(True)
+        f.setPixelSize(max(6, int(22 * s)))
+        p.setFont(f)
+        p.setPen(QColor("white"))
+        p.drawText(QRect(int(31 * s), int(31 * s), int(30 * s), int(30 * s)), Qt.AlignmentFlag.AlignCenter,
+                   str(count) if count < 10 else "9+")
     p.end()
     return QIcon(pm)
 
@@ -2128,10 +2142,11 @@ def xfce_remove_shortcut(seq):
 class TrafficGraph(QWidget):
     """Download/upload rate and latency over the last minutes."""
 
-    def __init__(self):
+    def __init__(self, compact=False):
         super().__init__()
         self.samples = []  # (t, rx_bps, tx_bps, latency_ms or None)
-        self.setMinimumHeight(110)
+        self.compact = compact  # small version for the tray card: no caption
+        self.setMinimumHeight(44 if compact else 110)
 
     def set_samples(self, samples):
         self.samples = samples
@@ -2140,7 +2155,7 @@ class TrafficGraph(QWidget):
     def paintEvent(self, _ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = self.rect().adjusted(4, 4, -4, -18)
+        r = self.rect().adjusted(4, 4, -4, -4 if self.compact else -18)
         pal = self.palette()
         p.fillRect(self.rect(), pal.base())
         p.setPen(QPen(pal.mid().color(), 1))
@@ -2153,7 +2168,7 @@ class TrafficGraph(QWidget):
         peak = max(max(s[1], s[2]) for s in self.samples) or 1
         lat_peak = max((s[3] or 0) for s in self.samples) or 1
 
-        def line(idx, color, scale):
+        def line(idx, color, scale, style=Qt.PenStyle.SolidLine):
             pts = []
             for i, s in enumerate(self.samples):
                 v = s[idx]
@@ -2163,12 +2178,15 @@ class TrafficGraph(QWidget):
                 y = r.bottom() - r.height() * (v / scale)
                 pts.append(QPointF(x, y))
             if len(pts) > 1:
-                p.setPen(QPen(QColor(color), 2))
+                p.setPen(QPen(QColor(color), 2, style))
                 p.drawPolyline(pts)
 
-        line(1, "#2f81f7", peak)
-        line(2, "#2ea043", peak)
-        line(3, "#d29922", lat_peak)
+        line(1, RX_COLOR, peak)
+        line(2, TX_COLOR, peak)
+        line(3, LAT_COLOR, lat_peak, Qt.PenStyle.DashLine)
+        if self.compact:
+            p.end()
+            return
         last = self.samples[-1]
         p.setPen(pal.text().color())
         f = p.font()
@@ -3106,6 +3124,16 @@ class PrefsDialog(QDialog):
         self.notify.toggled.connect(self.notify_style.setEnabled)
         self.notify_style.setEnabled(self.notify.isChecked())
         g.addRow(tr("Estilo de los avisos:"), self.notify_style)
+        self.hover_card = QCheckBox(tr("Mostrar los detalles de la conexión al pasar el puntero por el icono"))
+        self.hover_card.setChecked(settings.data.get("hover_card", True))
+        self.hover_card.setToolTip(tr("En paneles que no indican dónde está el icono, SwanGUI lo aprende la primera vez que haces clic en él."))
+        g.addRow("", self.hover_card)
+        self.card_ip = QCheckBox(tr("Mostrar también mi IP pública en esos detalles"))
+        self.card_ip.setChecked(settings.data.get("card_public_ip", False))
+        self.card_ip.setToolTip(tr("Se consulta a api.ipify.org solo al abrir los detalles, como mucho una vez por minuto."))
+        self.hover_card.toggled.connect(self.card_ip.setEnabled)
+        self.card_ip.setEnabled(self.hover_card.isChecked())
+        g.addRow("", self.card_ip)
         g.addRow("", self.keyring)
         g.addRow(tr("Avisar caducidad de certificados:"), self.cert_days)
         self.tray_theme = combo([("auto", tr("Automático (según el tema)")), ("light", tr("Panel claro (borde oscuro)")),
@@ -3357,7 +3385,7 @@ class LogWindow(QDialog):
 # help menu: about, project links, bug reports, donations, updates
 # ---------------------------------------------------------------------------
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 REPO_URL = "https://github.com/FrankMncrf/SwanGUI"
 RELEASES_API = "https://api.github.com/repos/FrankMncrf/SwanGUI/releases/latest"
 # donation targets; an empty value hides that option
@@ -3422,15 +3450,126 @@ def system_info(app):
     ])
 
 
-class Balloon(QWidget):
-    """SwanGUI's own notification bubble, drawn next to the tray icon (like FortiClient)."""
-    clicked = pyqtSignal()
+def find_icon(img, state, side):
+    """Rect of our shield in a strip grabbed at one screen edge, found by its solid fill color.
+
+    Returns (fill pixels, QRect relative to the image) or None. The fill must touch the
+    panel's edge, which rules out the same color inside windows.
+    """
+    from PyQt6.QtGui import QImage
+    if img.isNull():
+        return None
+    img = img.convertToFormat(QImage.Format.Format_RGB32)
+    acc = QColor(COLORS[state])
+    key = bytes([acc.blue(), acc.green(), acc.red(), 255])
+    data, bpl = img.constBits().asstring(img.sizeInBytes()), img.bytesPerLine()
+    hits, i = [], data.find(key)
+    while i != -1 and len(hits) < 4000:
+        if i % 4 == 0:
+            hits.append((i % bpl // 4, i // bpl))
+        i = data.find(key, i + 4)
+    axis = 0 if side in ("top", "bottom") else 1
+    blobs = []
+    for h in sorted(hits, key=lambda h: h[axis]):
+        if blobs and h[axis] - blobs[-1][-1][axis] <= 2:
+            blobs[-1].append(h)
+        else:
+            blobs.append([h])
+    best = None
+    for blob in blobs:
+        xs, ys = [h[0] for h in blob], [h[1] for h in blob]
+        w, h = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+        edge = {"top": min(ys), "bottom": img.height() - 1 - max(ys),
+                "left": min(xs), "right": img.width() - 1 - max(xs)}[side]
+        if len(blob) < 30 or not 0.5 <= w / h <= 1.6 or max(w, h) > 48 or edge > 12:
+            continue
+        if best is None or len(blob) > best[0]:
+            size = round(max(w, h) / 0.75)
+            cx, cy = (min(xs) + max(xs)) // 2, (min(ys) + max(ys)) // 2
+            best = (len(blob), QRect(cx - size // 2, cy - size // 2, size, size))
+    return best
+
+
+class TrayPopup(QWidget):
+    """Frameless bubble drawn by SwanGUI next to the tray icon (like FortiClient)."""
+    spot = None  # QRect of the tray icon when Qt can't tell (StatusNotifierItem): found on screen or clicked
 
     def __init__(self):
         super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.accent = QColor(COLORS["up"])
+
+    @staticmethod
+    def remember_click():
+        pos = QCursor.pos()
+        if TrayPopup.spot is None or not TrayPopup.spot.adjusted(-6, -6, 6, 6).contains(pos):
+            TrayPopup.spot = QRect(pos.x() - 11, pos.y() - 11, 22, 22)
+
+    @staticmethod
+    def locate(state):
+        """Find our icon on the panels (X11; Wayland returns empty grabs)."""
+        best = None
+        band = 64
+        for screen in QGuiApplication.screens():
+            g = screen.geometry()
+            for side, (bx, by, bw, bh) in (("top", (0, 0, g.width(), band)),
+                                           ("bottom", (0, g.height() - band, g.width(), band)),
+                                           ("left", (0, 0, band, g.height())),
+                                           ("right", (g.width() - band, 0, band, g.height()))):
+                img = screen.grabWindow(0, bx, by, bw, bh).toImage()
+                found = find_icon(img, state, side)
+                if found and (best is None or found[0] > best[0]):
+                    best = (found[0], found[1].translated(g.x() + bx, g.y() + by))
+        if best:
+            TrayPopup.spot = best[1]
+        return best[1] if best else None
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pal = self.palette()
+        p.setPen(QPen(pal.mid().color(), 1))
+        p.setBrush(pal.window().color())
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self.accent)
+        p.drawRoundedRect(3, 10, 4, self.height() - 20, 2, 2)
+        p.end()
+
+    def place(self, anchor):
+        self.adjustSize()
+        w, h = self.width(), self.height()
+        if not (anchor.isValid() and anchor.width() > 0) and self.spot is not None:
+            anchor = self.spot
+        screen = (QGuiApplication.screenAt(anchor.center()) if anchor.isValid() else None) \
+            or QGuiApplication.primaryScreen()
+        avail, full = screen.availableGeometry(), screen.geometry()
+        margin = 8
+        if anchor.isValid() and anchor.width() > 0:
+            x = anchor.center().x() - w // 2
+            # panel at the bottom → above the icon, otherwise below it
+            y = anchor.top() - h - margin if anchor.center().y() > full.center().y() else anchor.bottom() + margin
+            if anchor.right() < avail.left() or anchor.left() > avail.right():  # side panel
+                x = anchor.right() + margin if anchor.center().x() < full.center().x() else anchor.left() - w - margin
+                y = anchor.center().y() - h // 2
+        else:
+            # no icon geometry (StatusNotifierItem): corner of the panel side
+            x = avail.right() - w - margin
+            y = avail.top() + margin if avail.top() > full.top() or avail.bottom() == full.bottom() \
+                else avail.bottom() - h - margin
+        x = max(avail.left() + margin, min(x, avail.right() - w - margin))
+        y = max(avail.top() + margin, min(y, avail.bottom() - h - margin))
+        self.move(x, y)
+
+
+class Balloon(TrayPopup):
+    """Notification bubble."""
+    clicked = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
         self.icon = QLabel()
         self.title = QLabel()
         self.title.setStyleSheet("font-weight: bold")
@@ -3447,27 +3586,9 @@ class Balloon(QWidget):
         row.setSpacing(12)
         row.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignTop)
         row.addLayout(col)
-        self.accent = QColor(COLORS["up"])
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.hide)
-        self.click_pos = None  # where the user last clicked the tray, when Qt can't tell us the icon's place
-
-    def remember_click(self):
-        from PyQt6.QtGui import QCursor
-        self.click_pos = QCursor.pos()
-
-    def paintEvent(self, _event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pal = self.palette()
-        p.setPen(QPen(pal.mid().color(), 1))
-        p.setBrush(pal.window().color())
-        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(self.accent)
-        p.drawRoundedRect(3, 10, 4, self.height() - 20, 2, 2)
-        p.end()
 
     def mousePressEvent(self, _event):
         self.hide()
@@ -3478,38 +3599,161 @@ class Balloon(QWidget):
         self.icon.setPixmap(shield_icon(state, 40).pixmap(40, 40))
         self.title.setText(title)
         self.text.setText(text)
-        self.adjustSize()
-        w, h = self.width(), self.height()
-        screen = (QGuiApplication.screenAt(anchor.center()) if anchor.isValid() else None) \
-            or QGuiApplication.primaryScreen()
-        avail, full = screen.availableGeometry(), screen.geometry()
-        margin = 8
-        if not (anchor.isValid() and anchor.width() > 0) and self.click_pos is not None:
-            from PyQt6.QtCore import QRect
-            near = QGuiApplication.screenAt(self.click_pos)
-            if near is not None:
-                g = near.geometry()
-                av = near.availableGeometry()
-                # only trust the click if it was on the panel strip
-                if self.click_pos.y() < av.top() or self.click_pos.y() > av.bottom():
-                    anchor = QRect(self.click_pos.x() - 8, g.top() if self.click_pos.y() < av.top() else av.bottom(),
-                                   16, (av.top() - g.top()) if self.click_pos.y() < av.top() else (g.bottom() - av.bottom()))
-                    screen, avail, full = near, av, g
-        if anchor.isValid() and anchor.width() > 0:
-            x = anchor.center().x() - w // 2
-            # panel at the bottom → above the icon, otherwise below it
-            y = anchor.top() - h - margin if anchor.center().y() > full.center().y() else anchor.bottom() + margin
-        else:
-            # no icon geometry (StatusNotifierItem): corner of the panel side
-            x = avail.right() - w - margin
-            y = avail.top() + margin if avail.top() > full.top() or avail.bottom() == full.bottom() \
-                else avail.bottom() - h - margin
-        x = max(avail.left() + margin, min(x, avail.right() - w - margin))
-        y = max(avail.top() + margin, min(y, avail.bottom() - h - margin))
-        self.move(x, y)
+        self.place(anchor)
         self.show()
         self.raise_()
         self.timer.start(max(2500, ms))
+
+
+class CardSection(QWidget):
+    """One connection in the hover card: details, connect/disconnect and a small graph."""
+
+    def __init__(self, app, name):
+        super().__init__()
+        self.app, self.name = app, name
+        self.label = QLabel()
+        self.label.setTextFormat(Qt.TextFormat.RichText)
+        self.button = QPushButton()
+        self.button.clicked.connect(self._clicked)
+        self.graph = TrafficGraph(compact=True)
+        self.graph.setFixedHeight(44)
+        top = QHBoxLayout()
+        top.addWidget(self.label, 1)
+        top.addWidget(self.button, 0, Qt.AlignmentFlag.AlignTop)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 4, 0, 0)
+        lay.addLayout(top)
+        lay.addWidget(self.graph)
+
+    def _clicked(self):
+        if self.app.state_of(self.name) in ("up", "connecting"):
+            self.app.disconnect_vpn(self.name)
+        else:
+            self.app.connect_vpn(self.name)
+
+    def set(self, state, text):
+        self.label.setText(text)
+        busy = self.app.busy.get(self.name)
+        self.button.setText(tr("Desconectar") if state in ("up", "connecting") else tr("Conectar"))
+        self.button.setEnabled(busy is None)
+        samples = list(self.app.samples.get(self.name, []))
+        self.graph.setVisible(state == "up" and len(samples) > 1)
+        self.graph.set_samples(samples)
+
+
+class HoverCard(TrayPopup):
+    """Connection details shown while the pointer rests on the tray icon."""
+    public_ip = pyqtSignal(str)
+
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.tray = app.tray
+        self.enabled = True
+        self.muted = False  # after a click, until the pointer leaves the icon
+        self.head = QLabel()
+        self.head.setTextFormat(Qt.TextFormat.RichText)
+        self.body = QVBoxLayout()
+        self.body.setSpacing(6)
+        self.sections = {}
+        self.open = QPushButton(tr("Abrir SwanGUI"))
+        self.open.clicked.connect(self._open)
+        foot = QHBoxLayout()
+        foot.addStretch()
+        foot.addWidget(self.open)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 10, 16, 12)
+        lay.addWidget(self.head)
+        lay.addLayout(self.body)
+        lay.addLayout(foot)
+        self.ip = ("", 0)  # last public IP and when it was asked
+        self.public_ip.connect(self._got_ip)
+        self.since = None
+        self.away = None
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._track)
+        self.timer.start(250)
+
+    def zone(self):
+        g = self.tray.geometry()
+        return g if g.isValid() and g.width() > 0 else self.spot
+
+    def mute(self):
+        self.muted = True
+        self.hide()
+
+    def _open(self):
+        self.hide()
+        self.app.show_window()
+
+    def _track(self):
+        zone = self.zone() if self.enabled else None
+        pos = QCursor.pos()
+        over = zone is not None and zone.adjusted(-2, -2, 2, 2).contains(pos)
+        if over and self.muted:
+            return
+        if not over:
+            self.since = None
+            self.muted = False
+            if self.isVisible():
+                # the card stays open while the pointer is on it (or crossing the gap to it)
+                if self.geometry().adjusted(-16, -16, 16, 16).contains(pos):
+                    self.away = None
+                else:
+                    self.away = self.away or time.monotonic()
+                    if time.monotonic() - self.away >= 0.5:
+                        self.hide()
+            return
+        self.away = None
+        self.since = self.since or time.monotonic()
+        if time.monotonic() - self.since >= 0.4 and QApplication.activePopupWidget() is None \
+                and not self.isVisible():
+            self.refresh(zone)
+
+    def refresh(self, anchor=None):
+        state, head, conns = self.app._card_content()
+        if self.app.settings.data.get("card_public_ip", False):
+            if not self.isVisible() and time.time() - self.ip[1] > 60:
+                self._ask_ip()
+            head += "<br>" + html.escape(tr("IP pública: {0}").format(self.ip[0] or "…"))
+        self.accent = QColor(COLORS.get(state, COLORS["down"]))
+        self.head.setText(head)
+        names = [c[0] for c in conns]
+        if names != list(self.sections):
+            for sec in self.sections.values():
+                sec.deleteLater()
+            self.sections = {n: CardSection(self.app, n) for n in names}
+            for sec in self.sections.values():
+                self.body.addWidget(sec)
+        for name, st, text in conns:
+            self.sections[name].set(st, text)
+        if not self.isVisible():
+            self.place(anchor or self.zone() or QRect())
+            self.show()
+            self.raise_()
+        else:
+            self.adjustSize()
+        self.update()
+
+    def _ask_ip(self):
+        self.ip = (self.ip[0], time.time())
+
+        def work():
+            try:
+                req = urllib.request.Request("https://api.ipify.org", headers={"User-Agent": APP})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    ip = r.read(64).decode().strip()
+                ip = str(ipaddress.ip_address(ip))
+            except (OSError, ValueError):
+                ip = tr("no disponible")
+            self.public_ip.emit(ip)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _got_ip(self, ip):
+        self.ip = (ip, self.ip[1])
+        if self.isVisible():
+            self.refresh()
 
 
 class TextDialog(QDialog):
@@ -4046,6 +4290,7 @@ class SwanGUI(QObject):
         self.dns_pending = set()
         self.dns_retry = {}        # name -> earliest time to retry a failed DNS apply
         self.dns_warned = set()    # DNS problem already notified during this session of the tunnel
+        self.dns_info = {}         # name -> {"servers": [...], "domains": [...]} as applied
         self.clock = None          # (wall, monotonic) at the last poll, to detect suspend/resume
         self.resume_queue = set()
         self.resume_deadline = 0
@@ -4072,8 +4317,10 @@ class SwanGUI(QObject):
         self.tray.activated.connect(self._tray_activated)
         self.balloon = Balloon()
         self.balloon.clicked.connect(self.show_window)
-        self.tray.activated.connect(lambda _reason: self.balloon.remember_click())
-        self.menu.aboutToShow.connect(self.balloon.remember_click)
+        self.card = HoverCard(self)
+        self.card.enabled = self.settings.data.get("hover_card", True)
+        self.tray.activated.connect(lambda _reason: self._tray_clicked())
+        self.menu.aboutToShow.connect(self._tray_clicked)
         self.tray.show()
         self._build_menu()
 
@@ -4404,6 +4651,7 @@ class SwanGUI(QObject):
             if st in ("down", "error"):
                 self.dns_retry.pop(name, None)
                 self.dns_warned.discard(name)
+                self.dns_info.pop(name, None)
             if st == "up" and mode != "none" and name not in active:
                 if time.time() >= self.dns_retry.get(name, 0):
                     self._dns_call(name, ["dns-apply", name], self._dns_cfg(name))
@@ -4430,6 +4678,7 @@ class SwanGUI(QObject):
             self._notify(tr("{0}: conectado, pero el DNS de la VPN no se aplicó:\n{1}").format(name, error), "error", 10000)
 
     def _dns_applied(self, name, dns):
+        self.dns_info[name] = dns
         self.log.append(f"{name}: DNS aplicado", json.dumps(dns, ensure_ascii=False))
         if dns.get("dead") and name not in self.dns_warned:
             self.dns_warned.add(name)
@@ -4455,7 +4704,9 @@ class SwanGUI(QObject):
             overall = "error"
         else:
             overall = "down"
-        self.tray.setIcon(shield_icon(overall))
+        self.up_count = len(up)
+        self.tray.setIcon(shield_icon(overall, count=len(up)))
+        self._pulse(overall == "connecting")
         lines = [APP]
         if not self.status.get("daemon", True):
             lines.append(tr("strongSwan no responde"))
@@ -4466,8 +4717,157 @@ class SwanGUI(QObject):
             extra = f" — {', '.join(sa.get('vips', []))}" if s == "up" and sa.get("vips") else ""
             lat = self.latency.get(n)
             extra += f" · {lat:.0f} ms" if s == "up" and lat is not None else ""
+            if s == "up":
+                extra += f" · {human_time(sa['established'])} · ↓{human_bytes(sa['bytes_in'])} ↑{human_bytes(sa['bytes_out'])}"
             lines.append(f"{'●' if s == 'up' else '○'} {n}: {STATE_LABELS[s].lower()}{extra}")
-        self.tray.setToolTip("\n".join(lines))
+        self.overall = overall
+        if self.tray.isVisible():
+            QTimer.singleShot(500, self._locate_tray)  # once the panel has drawn the new icon
+        # the hover card replaces the panel's tooltip once we know where the icon is
+        self.tray.setToolTip("" if self.card.enabled and self.card.zone() is not None else "\n".join(lines))
+        if self.card.isVisible():
+            self.card.refresh()
+
+    def _pulse(self, on):
+        """Make the shield breathe while a tunnel is being negotiated."""
+        if not hasattr(self, "pulse_timer"):
+            self.pulse_timer = QTimer(self)
+            self.pulse_timer.timeout.connect(self._pulse_step)
+            self.pulse_dim = False
+        if on and not self.pulse_timer.isActive():
+            self.pulse_timer.start(600)
+        elif not on and self.pulse_timer.isActive():
+            self.pulse_timer.stop()
+            self.pulse_dim = False
+
+    def _pulse_step(self):
+        self.pulse_dim = not self.pulse_dim
+        self.tray.setIcon(shield_icon("connecting", count=self.up_count, dim=self.pulse_dim))
+
+    def _tray_clicked(self):
+        self.card.mute()
+        TrayPopup.remember_click()
+
+    def _locate_tray(self):
+        # the icon moves when other apps add or remove theirs; the popups hide so they aren't mistaken for it
+        g = self.tray.geometry()
+        if self.card.enabled and not (g.isValid() and g.width() > 0) \
+                and not self.card.isVisible() and not self.balloon.isVisible():
+            TrayPopup.locate(self.overall)
+
+    def _card_content(self):
+        """(overall state, header html, [(name, state, html)]) for the hover card."""
+        sas = self.status.get("sas", {})
+        muted = QApplication.palette().placeholderText().color().name()
+
+        def dot(state):
+            return f"<span style='color:{COLORS[state]}; font-size:large'>●</span>"
+
+        def arrows(rx, tx):
+            return (f"<span style='color:{RX_COLOR}'><b>↓</b></span> {html.escape(rx)}&nbsp;&nbsp;&nbsp;"
+                    f"<span style='color:{TX_COLOR}'><b>↑</b></span> {html.escape(tx)}")
+
+        head = f"<b>{APP}</b>"
+        if not self.status.get("daemon", True):
+            head += f"<br>{dot('error')} " + html.escape(tr("strongSwan no responde"))
+        blocked = [n for n in self.status.get("killswitch", []) if self.state_of(n) != "up"]
+        if blocked:
+            head += f"<br>{dot('error')} " + html.escape(tr("🔒 Kill switch bloqueando tráfico"))
+        conns = self.status.get("connections", [])
+        if not conns:
+            head += "<br>" + html.escape(tr("Sin conexiones configuradas"))
+        out = []
+        for c in conns:
+            name = c["name"]
+            st = self.state_of(name)
+            rows = []
+
+            def row(label, value, color=None, raw=False):
+                val = value if raw else html.escape(str(value))
+                if color:
+                    val = f"<span style='color:{COLORS[color]}'>●</span> {val}"
+                rows.append(f"<tr><td style='color:{muted}; padding-right:12px'>{html.escape(label)}</td>"
+                            f"<td>{val}</td></tr>")
+
+            busy = self.busy.get(name)
+            label = tr("Desconectando…") if busy == "disconnecting" else STATE_LABELS[st]
+            text = f"{dot(st)} <b>{html.escape(name)}</b> — {html.escape(label)}"
+            sa = sas.get(name)
+            if st == "up" and sa:
+                meta = self.settings.conn(name)
+                q = self._quality(name)
+                if q:
+                    row(tr("Calidad"), q[1], q[0])
+                if sa.get("vips"):
+                    row(tr("IP virtual"), ", ".join(sa["vips"]))
+                row(tr("Servidor"), f"{c.get('remote', '')} ({sa['remote_host']})" if sa.get("remote_host")
+                    else c.get("remote", ""))
+                row(tr("Tiempo conectado"), human_time(sa["established"]))
+                row(tr("Recibido / enviado"), arrows(human_bytes(sa["bytes_in"]), human_bytes(sa["bytes_out"])), raw=True)
+                samples = self.samples.get(name)
+                if samples:
+                    row(tr("Velocidad"), arrows(human_bytes(samples[-1][1]) + "/s", human_bytes(samples[-1][2]) + "/s"),
+                        raw=True)
+                if not q and self.latency.get(name) is not None:
+                    row(tr("Latencia"), f"{self.latency[name]:.0f} ms")
+                if c.get("remote_ts"):
+                    row(tr("Redes remotas"), c["remote_ts"])
+                mode = meta.get("dns_mode", "none")
+                if name in self.status.get("dns", []):
+                    info = self.dns_info.get(name) or self._query_dns(name)
+                    dns = ", ".join(info.get("servers", [])) or "…"
+                    doms = ", ".join(d.lstrip("~") for d in info.get("domains", []) if d != "~.")
+                    row(tr("DNS"), dns + (f" ({doms})" if doms else tr(" (todo el tráfico)") if mode == "all" else ""))
+                    if info.get("dead"):
+                        row(tr("DNS sin respuesta"), ", ".join(info["dead"]), "connecting")
+                else:
+                    row(tr("DNS"), dict(DNS_MODES).get(mode, mode))
+                rekeys = [("IKE", sa.get("rekey_in")), ("ESP", sa.get("child_rekey_in"))]
+                rekeys = [tr("{0} en {1}").format(k, human_time(v)) for k, v in rekeys if v]
+                if rekeys:
+                    row(tr("Renegociación"), " · ".join(rekeys))
+                if name in self.status.get("killswitch", []):
+                    row(tr("Kill switch"), tr("activo"))
+            days = self._cert_days(c.get("certs", ""))
+            if days is not None and days <= self.settings.data.get("cert_warn_days", 30):
+                row(tr("Certificado"), tr("CADUCADO") if days < 0 else tr("caduca en {0} días").format(days),
+                    "error" if days < 7 else "connecting")
+            if rows:
+                text += f"<table cellspacing='0' cellpadding='1'>{''.join(rows)}</table>"
+            out.append((name, st, text))
+        return getattr(self, "overall", "down"), head, out
+
+    def _quality(self, name):
+        """(color, text) from the last minute of pings, or None if the target never answers ICMP."""
+        recent = [s[3] for s in list(self.samples.get(name, []))[-15:]]
+        if len(recent) < 3 or all(v is None for v in recent):
+            return None
+        lat = [v for v in recent if v is not None]
+        loss = 1 - len(lat) / len(recent)
+        avg = sum(lat) / len(lat)
+        jitter = sum(abs(a - b) for a, b in zip(lat, lat[1:])) / max(1, len(lat) - 1)
+        if loss == 0 and avg < 100 and jitter < 30:
+            color, word = "up", tr("Buena")
+        elif loss < 0.2 and avg < 250:
+            color, word = "connecting", tr("Regular")
+        else:
+            color, word = "error", tr("Inestable")
+        text = f"{word} · {avg:.0f} ms"
+        if loss:
+            text += " · " + tr("{0:.0f}% sin respuesta").format(loss * 100)
+        return color, text
+
+    def _query_dns(self, name):
+        """DNS applied before SwanGUI started: ask systemd-resolved (no privileges needed)."""
+        self.dns_info[name] = info = {}
+        ifn = "swg-" + re.sub(r"[^A-Za-z0-9_-]", "_", name)[:11]
+        for key, verb in (("servers", "dns"), ("domains", "domain")):
+            try:
+                out = subprocess.run(["resolvectl", verb, ifn], capture_output=True, text=True, timeout=3).stdout
+            except (OSError, subprocess.SubprocessError):
+                continue
+            info[key] = out.split(":", 1)[1].split() if ":" in out else []
+        return info
 
     def _build_menu(self):
         m = self.menu
@@ -4526,6 +4926,8 @@ class SwanGUI(QObject):
             d = self.settings.data
             d["notifications"] = dlg.notify.isChecked()
             d["notify_style"] = dlg.notify_style.currentData()
+            d["hover_card"] = self.card.enabled = dlg.hover_card.isChecked()
+            d["card_public_ip"] = dlg.card_ip.isChecked()
             d["start_hidden"] = dlg.start_hidden.isChecked()
             d["use_keyring"] = dlg.keyring.isChecked()
             d["cert_warn_days"] = dlg.cert_days.value()

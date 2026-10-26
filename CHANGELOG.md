@@ -1,5 +1,14 @@
 # Novedades
 
+## 1.0.2 — 2026-10-25
+
+- Al dejar el puntero sobre el icono de la bandeja aparece una tarjeta con los detalles de cada conexión: círculo con el color del estado, calidad (latencia y pérdidas), IP virtual, servidor, tiempo conectado, recibido/enviado, velocidad, redes remotas, DNS, próxima renegociación y aviso de caducidad del certificado.
+- La tarjeta incluye una gráfica de tráfico y botones para conectar, desconectar y abrir SwanGUI.
+- Opcional: mostrar la IP pública en la tarjeta (Preferencias; desactivado por defecto).
+- El icono muestra cuántas VPN hay activas cuando son varias y parpadea suavemente mientras conecta.
+- El globo de avisos aparece ahora justo debajo del icono aunque el panel no indique su posición.
+- Colores con más contraste en las gráficas: recibido en azul, enviado en naranja y latencia en gris discontinuo.
+
 ## 1.0.1 — 2026-10-25
 
 - Los avisos de conexión, desconexión y errores se muestran en un globo propio de SwanGUI junto al icono de la bandeja, como en FortiClient.

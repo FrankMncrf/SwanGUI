@@ -605,6 +605,13 @@ def cmd_delete(name):
 # runtime
 # ---------------------------------------------------------------------------
 
+def _int(v):
+    try:
+        return max(0, int(v))
+    except (TypeError, ValueError):
+        return 0
+
+
 def cmd_status():
     conns = []
     for path in conf_files():
@@ -655,6 +662,9 @@ def cmd_status():
                     "established": int(sa.get("established", 0) or 0),
                     "bytes_in": bin_,
                     "bytes_out": bout,
+                    "rekey_in": _int(sa.get("rekey-time")),
+                    "child_rekey_in": min((_int(c.get("rekey-time")) for c in children.values()
+                                           if isinstance(c, dict) and _int(c.get("rekey-time"))), default=0),
                 }
                 # keep the best SA if several exist (e.g. during rekey)
                 if prev is None or (entry["state"] == "ESTABLISHED" and prev["state"] != "ESTABLISHED"):

@@ -40,27 +40,27 @@ Descarga el paquete de tu distribución desde la [última versión](https://gith
 
 | Distribución | Paquete |
 |---|---|
-| Debian 12+ / Ubuntu 24.04+ | [swangui_1.0.1-1_all.deb](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.1/swangui_1.0.1-1_all.deb) |
-| Fedora | [swangui-1.0.1-1.fc44.noarch.rpm](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.1/swangui-1.0.1-1.fc44.noarch.rpm) |
-| Arch Linux, CachyOS, Manjaro, EndeavourOS | [swangui-1.0.1-1-any.pkg.tar.zst](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.1/swangui-1.0.1-1-any.pkg.tar.zst) · [PKGBUILD](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.1/PKGBUILD) |
-| Sumas de verificación | [SHA256SUMS](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.1/SHA256SUMS) |
+| Debian 12+ / Ubuntu 24.04+ | [swangui_1.0.2-1_all.deb](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.2/swangui_1.0.2-1_all.deb) |
+| Fedora | [swangui-1.0.2-1.fc44.noarch.rpm](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.2/swangui-1.0.2-1.fc44.noarch.rpm) |
+| Arch Linux, CachyOS, Manjaro, EndeavourOS | [swangui-1.0.2-1-any.pkg.tar.zst](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.2/swangui-1.0.2-1-any.pkg.tar.zst) · [PKGBUILD](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.2/PKGBUILD) |
+| Sumas de verificación | [SHA256SUMS](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.2/SHA256SUMS) |
 
 ### Debian / Ubuntu
 
 ```sh
-sudo apt install ./swangui_1.0.1-1_all.deb
+sudo apt install ./swangui_1.0.2-1_all.deb
 ```
 
 ### Fedora
 
 ```sh
-sudo dnf install ./swangui-1.0.1-1.fc44.noarch.rpm
+sudo dnf install ./swangui-1.0.2-1.fc44.noarch.rpm
 ```
 
 ### Arch Linux y derivadas
 
 ```sh
-sudo pacman -U swangui-1.0.1-1-any.pkg.tar.zst
+sudo pacman -U swangui-1.0.2-1-any.pkg.tar.zst
 ```
 
 O constrúyelo tú con el `PKGBUILD`: `makepkg -si`. Pronto también en AUR (`yay -S swangui`).
@@ -76,7 +76,7 @@ git clone https://github.com/FrankMncrf/SwanGUI.git && cd SwanGUI
 
 ## Uso
 
-Abre **SwanGUI** desde el menú de aplicaciones. El icono del escudo en la bandeja indica el estado (verde conectado, ámbar conectando, rojo error o kill switch bloqueando). Clic derecho para conectar o desconectar.
+Abre **SwanGUI** desde el menú de aplicaciones. El icono del escudo en la bandeja indica el estado (verde conectado, ámbar conectando, rojo error o kill switch bloqueando). Clic derecho para conectar o desconectar. Al dejar el puntero sobre el icono aparece una tarjeta con los detalles de cada conexión: calidad, IP virtual, tiempo conectado, tráfico, velocidad, DNS y renegociación, con botones para conectar o desconectar.
 
 ```text
 swangui status | list | connect NOMBRE | disconnect NOMBRE | toggle NOMBRE
@@ -102,7 +102,7 @@ GPL-3.0-or-later. Consulta [LICENSE](LICENSE).
 
 ## English
 
-SwanGUI is a tray application to create, edit, import/export, connect and monitor **strongSwan IPsec** VPNs with a FortiClient-like interface: IKEv1/IKEv2, PSK, certificates, EAP and XAuth, vendor templates, split DNS through systemd-resolved (with a liveness check of the VPN DNS), an nftables kill switch that also covers containers, trusted networks, auto-reconnect after suspend, captive portal awareness, diagnostics, DNS leak test, keyring storage, OTP, certificate expiry warnings, keyboard shortcuts and a CLI.
+SwanGUI is a tray application to create, edit, import/export, connect and monitor **strongSwan IPsec** VPNs with a FortiClient-like interface: IKEv1/IKEv2, PSK, certificates, EAP and XAuth, vendor templates, split DNS through systemd-resolved (with a liveness check of the VPN DNS), an nftables kill switch that also covers containers, trusted networks, auto-reconnect after suspend, captive portal awareness, a hover card on the tray icon with live connection details, diagnostics, DNS leak test, keyring storage, OTP, certificate expiry warnings, keyboard shortcuts and a CLI.
 
 Import/export formats: FortiClient, strongSwan swanctl, MikroTik RouterOS, pfSense/OPNsense, Windows PowerShell, Cisco IOS, Apple .mobileconfig and strongSwan for Android (.sswan), optionally **password-encrypted** (scrypt + AES-256-GCM).
 
