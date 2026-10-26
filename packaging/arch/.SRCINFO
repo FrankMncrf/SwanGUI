@@ -20,6 +20,6 @@ pkgbase = swangui
 	optdepends = networkmanager: trusted networks and captive portal detection
 	optdepends = polkit-gnome: authentication agent for desktops without one
 	source = swangui-1.0.2.tar.gz::https://github.com/FrankMncrf/SwanGUI/archive/refs/tags/v1.0.2.tar.gz
-	sha256sums = 736232472d163ab9c0e9ad4d0dc1d8328ab548fc78a629420b5ddf4fa1edfc14
+	sha256sums = 31b2dea8a6791e08168bfb7fb3974f3d75e8bcec78c4910ed995d85a8639054f
 
 pkgname = swangui
