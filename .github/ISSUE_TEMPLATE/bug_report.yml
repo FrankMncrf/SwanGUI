@@ -1,0 +1,34 @@
+name: Reportar un error / Bug report
+description: Algo no funciona como debería / Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **No pegues claves, contraseñas, usuarios ni direcciones de tu VPN.**
+        *Do not paste keys, passwords, user names or addresses of your VPN.*
+  - type: textarea
+    id: what
+    attributes:
+      label: ¿Qué pasó? / What happened?
+      description: Qué hiciste, qué esperabas y qué ocurrió / What you did, what you expected and what happened
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Pasos para reproducirlo / Steps to reproduce
+  - type: textarea
+    id: logs
+    attributes:
+      label: Registro / Log
+      description: Ventana Registro de SwanGUI (revisa que no tenga datos sensibles) / SwanGUI log window (check it has no sensitive data)
+      render: text
+  - type: textarea
+    id: environment
+    attributes:
+      label: Entorno / Environment
+      description: Ayuda → Copiar información del sistema / Help → Copy system information
+      render: text
+    validations:
+      required: true

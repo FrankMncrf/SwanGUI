@@ -1,0 +1,25 @@
+// SwanGUI: two privilege levels for the strongSwan helper.
+//
+// Routine operations (status, connect, disconnect, diagnostics) run without a
+// password for administrators ("wheel" on Arch/Fedora, "sudo" on Debian/Ubuntu)
+// in an active local session, like NetworkManager does for VPNs.
+//
+// Everything that changes the configuration or can reveal secrets (create,
+// edit, delete, import, raw editor, export with passwords) needs the
+// administrator password; polkit remembers it for a few minutes.
+polkit.addRule(function(action, subject) {
+    if (action.id != "org.swangui.helper")
+        return polkit.Result.NOT_HANDLED;
+    if (!(subject.local && subject.active && (subject.isInGroup("wheel") || subject.isInGroup("sudo"))))
+        return polkit.Result.AUTH_ADMIN;
+
+    var args = (action.lookup("command_line") || "").split(" ");
+    var cmd = args.length > 1 ? args[1] : "";
+    var routine = ["status", "read", "up", "down", "dns-apply", "dns-clear",
+                   "killswitch-on", "killswitch-off", "certs", "diagnose", "reload"];
+    if (routine.indexOf(cmd) >= 0)
+        return polkit.Result.YES;
+    if (cmd == "export" && args.length == 4 && args[3] == "nosecrets")
+        return polkit.Result.YES;
+    return polkit.Result.AUTH_ADMIN_KEEP;
+});

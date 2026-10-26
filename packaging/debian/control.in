@@ -1,0 +1,14 @@
+Package: swangui
+Version: @VERSION@-1
+Architecture: all
+Section: net
+Priority: optional
+Maintainer: Frank <FrankMncrf@users.noreply.github.com>
+Depends: python3 (>= 3.10), python3-pyqt6, strongswan-swanctl, charon-systemd, polkitd | policykit-1, nftables, iproute2, openssl, iputils-ping
+Recommends: systemd-resolved, python3-cryptography, libsecret-tools, network-manager
+Homepage: https://github.com/FrankMncrf/SwanGUI
+Description: FortiClient-style IPsec VPN client for strongSwan
+ Tray application to create, edit, import/export, connect and monitor
+ strongSwan IPsec VPNs (IKEv1/IKEv2, PSK, certificates, EAP, XAuth) with
+ split DNS, kill switch, trusted networks, diagnostics and vendor
+ import/export (FortiClient, MikroTik, pfSense, Windows, Cisco, Apple).

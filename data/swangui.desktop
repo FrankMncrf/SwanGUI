@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=SwanGUI
+GenericName=IPsec VPN client
+GenericName[es]=Cliente VPN IPsec
+Comment=Manage and connect your strongSwan IPsec VPNs from the tray
+Comment[es]=Administra y conecta tus VPN IPsec strongSwan desde la bandeja
+Exec=swangui --show
+Icon=swangui
+Categories=Network;Settings;
+Keywords=vpn;ipsec;strongswan;ikev2;forticlient;
+StartupNotify=false

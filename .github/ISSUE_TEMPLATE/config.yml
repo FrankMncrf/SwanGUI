@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ideas y preguntas / Ideas and questions
+    url: https://github.com/FrankMncrf/SwanGUI/discussions
+    about: Conversaciones abiertas con la comunidad / Open conversations with the community
+  - name: Vulnerabilidad de seguridad / Security vulnerability
+    url: https://github.com/FrankMncrf/SwanGUI/security/advisories/new
+    about: Repórtala en privado / Report it privately

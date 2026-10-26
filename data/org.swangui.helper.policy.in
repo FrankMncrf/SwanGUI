@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>SwanGUI</vendor>
+  <action id="org.swangui.helper">
+    <description>Manage strongSwan VPN connections</description>
+    <description xml:lang="es">Administrar conexiones VPN strongSwan</description>
+    <message>Authentication is required to manage VPN connections</message>
+    <message xml:lang="es">Se requiere autenticación para administrar las conexiones VPN</message>
+    <icon_name>network-vpn</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@LIBDIR@/swangui-helper</annotate>
+  </action>
+</policyconfig>

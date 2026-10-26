@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+/build/
+/dist/
+/packaging/arch/pkg/
+/packaging/arch/src/
+/packaging/arch/*.tar.*
+*.deb
+*.rpm
+*.swgenc

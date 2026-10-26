@@ -1,0 +1,1344 @@
+#!/usr/bin/python3 -I
+"""SwanGUI privileged helper.
+
+Runs as root through pkexec. Every operation that touches strongSwan
+(/etc/swanctl, the vici socket) goes through here. Output is JSON on stdout.
+
+Commands:
+  status                    connections from config + active SAs
+  read NAME                 structured view of a connection (no secrets)
+  write                     create/update a connection (JSON on stdin)
+  delete NAME               remove a connection
+  read-raw NAME             raw text of the file holding NAME
+  write-raw NAME            replace that file with stdin text
+  up NAME / down NAME       initiate / terminate
+  reload                    swanctl --load-all
+"""
+import ipaddress
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import syslog
+import tempfile
+import time
+
+CONF_DIR = "/etc/swanctl/conf.d"
+BACKUP_DIR = "/etc/swanctl/swangui-backup"
+# Debian/Ubuntu and Fedora ship it in /usr/sbin; never trust the caller's PATH
+SWANCTL = shutil.which("swanctl", path="/usr/sbin:/usr/bin:/sbin:/bin") or "/usr/sbin/swanctl"
+I18N_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "i18n")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?\.)*"
+                       r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$")
+# The helper runs as root without a password, so nothing a caller writes may
+# make charon run a program (updown) or read files outside /etc/swanctl.
+FORBIDDEN_KEYS = {"updown"}
+FILE_KEYS = {"certs", "cacerts", "pubkeys", "cacert", "cert", "file"}
+
+
+class HelperError(Exception):
+    pass
+
+
+def _caller_language():
+    """pkexec clears the environment, so take the language from the SwanGUI process
+    that started us. Only a short code is used, to pick a file from I18N_DIR."""
+    try:
+        with open(f"/proc/{os.getppid()}/environ", "rb") as f:
+            for item in f.read().split(b"\0"):
+                if item.startswith(b"SWANGUI_LANG="):
+                    return re.sub(r"[^a-z]", "", item[13:].decode("ascii", "ignore"))[:5] or "es"
+    except OSError:
+        pass
+    return "es"
+
+
+def _load_catalog(lang):
+    if lang == "es":
+        return {}
+    try:
+        with open(os.path.join(I18N_DIR, f"{lang}.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+_CATALOG = _load_catalog(_caller_language())
+
+
+def tr(text):
+    return _CATALOG.get(text, text)
+
+
+# ---------------------------------------------------------------------------
+# strongSwan settings syntax (swanctl.conf and `swanctl --pretty` output)
+# ---------------------------------------------------------------------------
+
+def parse(text):
+    """Parse settings text into nested dicts. Lists ([...]) become lists."""
+    root = {}
+    stack = [root]
+    lst = None  # (dict, key) while inside a [ ... ] list
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = _strip_comment(raw).strip()
+        if not line:
+            continue
+        if lst is not None:
+            if line == "]":
+                lst = None
+            else:
+                lst[0][lst[1]].append(_unquote(line))
+            continue
+        # a line may hold several "}" or "name { k = v }" fragments
+        while line:
+            if line.startswith("}"):
+                if len(stack) == 1:
+                    raise HelperError(tr("línea {0}: '}}' sin abrir").format(lineno))
+                stack.pop()
+                line = line[1:].strip()
+                continue
+            m = re.match(r"^([^={}]+?)\s*\{(.*)$", line)
+            if m and "=" not in m.group(1):
+                sect = {}
+                stack[-1][m.group(1).strip()] = sect
+                stack.append(sect)
+                line = m.group(2).strip()
+                continue
+            m = re.match(r"^([^={}]+?)\s*=\s*(.*)$", line)
+            if m:
+                key, val = m.group(1).strip(), m.group(2).strip()
+                if val == "[":
+                    stack[-1][key] = []
+                    lst = (stack[-1], key)
+                    line = ""
+                elif val.startswith('"'):
+                    s, rest = _read_quoted(val, lineno)
+                    stack[-1][key] = s
+                    line = rest.strip()
+                else:
+                    # unquoted value runs to "}" or end of line
+                    idx = val.find("}")
+                    if idx >= 0:
+                        stack[-1][key] = val[:idx].strip()
+                        line = val[idx:]
+                    else:
+                        stack[-1][key] = val
+                        line = ""
+                continue
+            if line.startswith("include "):
+                stack[-1].setdefault("__include__", []).append(line[8:].strip())
+                line = ""
+                continue
+            raise HelperError(tr("línea {0}: no se entiende «{1}»").format(lineno, raw.strip()))
+    if len(stack) != 1:
+        raise HelperError(tr("faltan llaves de cierre '}'"))
+    return root
+
+
+def _strip_comment(line):
+    out, q = [], False
+    for i, c in enumerate(line):
+        if c == '"' and (i == 0 or line[i - 1] != "\\"):
+            q = not q
+        if c == "#" and not q:
+            break
+        out.append(c)
+    return "".join(out)
+
+
+def _read_quoted(val, lineno):
+    out, i = [], 1
+    while i < len(val):
+        c = val[i]
+        if c == "\\" and i + 1 < len(val):
+            out.append({"n": "\n", "t": "\t"}.get(val[i + 1], val[i + 1]))
+            i += 2
+            continue
+        if c == '"':
+            return "".join(out), val[i + 1:]
+        out.append(c)
+        i += 1
+    raise HelperError(tr("línea {0}: comillas sin cerrar").format(lineno))
+
+
+def _unquote(v):
+    return _read_quoted(v, 0)[0] if v.startswith('"') else v
+
+
+def _quote(v):
+    v = str(v)
+    if v == "" or re.search(r'[#{}"\\\n\r\t]|^\s|\s$', v):
+        return '"' + (v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+                      .replace("\t", "\\t").replace("\r", "")) + '"'
+    return v
+
+
+def dump(tree, indent=0):
+    pad = "    " * indent
+    out = []
+    for key, val in tree.items():
+        if key == "__include__":
+            out += [f"{pad}include {p}" for p in val]
+        elif isinstance(val, dict):
+            out.append(f"{pad}{key} {{")
+            out += dump(val, indent + 1)
+            out.append(f"{pad}}}")
+            if indent == 0:
+                out.append("")
+        else:
+            out.append(f"{pad}{key} = {_quote(val)}")
+    return out
+
+
+def dump_text(tree):
+    return tr("# Gestionado por SwanGUI\n\n") + "\n".join(dump(tree)).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------------------
+# config files
+# ---------------------------------------------------------------------------
+
+def conf_files():
+    if not os.path.isdir(CONF_DIR):
+        return []
+    return sorted(os.path.join(CONF_DIR, f) for f in os.listdir(CONF_DIR)
+                  if f.endswith(".conf"))
+
+
+def load_file(path):
+    with open(path, encoding="utf-8") as f:
+        return parse(f.read())
+
+
+def all_connections():
+    """[(name, path, conn_dict)] in file order."""
+    res = []
+    for path in conf_files():
+        try:
+            tree = load_file(path)
+        except (HelperError, OSError):
+            continue
+        for name, conn in tree.get("connections", {}).items():
+            if isinstance(conn, dict):
+                res.append((name, path, conn))
+    return res
+
+
+def find_conn(name):
+    for n, path, conn in all_connections():
+        if n == name:
+            return path, conn
+    return None, None
+
+
+def backup(path):
+    os.makedirs(BACKUP_DIR, mode=0o700, exist_ok=True)
+    dst = os.path.join(BACKUP_DIR, f"{os.path.basename(path)}.{time.strftime('%Y%m%d-%H%M%S')}")
+    shutil.copy2(path, dst)
+
+
+def atomic_write(path, text):
+    fd, tmp = tempfile.mkstemp(dir=CONF_DIR, prefix=".swangui-")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def check_name(name):
+    if not isinstance(name, str) or not NAME_RE.match(name):
+        raise HelperError(tr("Nombre inválido: empiece por letra o número y use letras, números, '.', '_' o '-' (máx. 64)"))
+    return name
+
+
+def check_tree(tree, where=""):
+    """Reject configuration that could run programs or read arbitrary files as root."""
+    for key, val in tree.items():
+        here = f"{where}.{key}" if where else key
+        if key == "__include__":
+            raise HelperError(tr("No se permiten directivas «include»"))
+        if key in FORBIDDEN_KEYS:
+            raise HelperError(tr("«{0}» no está permitido: ejecutaría un programa como root").format(here))
+        if isinstance(val, dict):
+            check_tree(val, here)
+        elif key in FILE_KEYS:
+            for item in (val if isinstance(val, list) else str(val).split(",")):
+                item = item.strip()
+                if "/" in item or item.startswith("."):
+                    raise HelperError(tr("«{0}»: indica solo el nombre del archivo, sin rutas (cópialo antes a /etc/swanctl/x509, x509ca o private)").format(here))
+    if not where:
+        for n, c in tree.get("connections", {}).items():
+            check_name(n)
+            if isinstance(c, dict):
+                for ch in c.get("children", {}):
+                    check_name(ch)
+
+
+def check_text(text):
+    """Control characters other than newline/tab have no place in a config file."""
+    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", text):
+        raise HelperError(tr("El texto contiene caracteres de control no permitidos"))
+    return text
+
+
+def check_opts(opts):
+    if not isinstance(opts, dict):
+        raise HelperError(tr("Opciones inválidas"))
+    return opts
+
+
+def run_swanctl(*args, timeout=60):
+    p = subprocess.run([SWANCTL, *args], capture_output=True, text=True, timeout=timeout)
+    return p.returncode, (p.stdout + p.stderr).strip()
+
+
+def reload_all():
+    code, out = run_swanctl("--load-all", "--noprompt")
+    if code != 0:
+        raise HelperError(tr("swanctl --load-all falló:\n") + out)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# secrets matching
+# ---------------------------------------------------------------------------
+
+def _ids(sect):
+    return [v for k, v in sect.items() if k == "id" or k.startswith("id-")]
+
+
+def find_secret(secrets, kind, name, ids):
+    """Return the key of the matching secrets section, or None."""
+    own = f"{kind}-{name}"
+    if own in secrets:
+        return own
+    wanted = {i for i in ids if i and i != "%any"}
+    for key, sect in secrets.items():
+        if key.startswith(kind) and isinstance(sect, dict) and wanted & set(_ids(sect)):
+            return key
+    if kind == "ike":
+        # an unnamed wildcard PSK in the same file (e.g. hand-written configs)
+        cands = [k for k, s in secrets.items()
+                 if k.startswith("ike") and isinstance(s, dict) and not _ids(s)]
+        if len(cands) == 1:
+            return cands[0]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# structured view <-> conn tree
+# ---------------------------------------------------------------------------
+
+def first_child(conn):
+    for k, v in conn.get("children", {}).items():
+        if isinstance(v, dict):
+            return k, v
+    return None, {}
+
+
+def conn_to_view(name, path, tree):
+    conn = tree["connections"][name]
+    local = conn.get("local", {}) if isinstance(conn.get("local"), dict) else {}
+    remote = conn.get("remote", {}) if isinstance(conn.get("remote"), dict) else {}
+    # local/remote may also be named local-1, remote-xyz ...
+    for k, v in conn.items():
+        if isinstance(v, dict) and k.startswith("local") and not local:
+            local = v
+        if isinstance(v, dict) and k.startswith("remote") and not remote:
+            remote = v
+    child_name, child = first_child(conn)
+    secrets = tree.get("secrets", {})
+    lid, rid = local.get("id", ""), remote.get("id", "")
+    eap_id = local.get("eap_id", "")
+    xauth = next((s for k, s in conn.items() if k.startswith("local") and isinstance(s, dict)
+                  and s is not local and s.get("auth", "").startswith("xauth")), None)
+    xauth_id = (xauth or {}).get("xauth_id", "") or lid
+    return {
+        "xauth": xauth is not None,
+        "xauth_id": xauth_id if xauth is not None else "",
+        "has_xauth": xauth is not None and find_secret(secrets, "xauth", name, [xauth_id]) is not None,
+        "rekey_time": conn.get("rekey_time", ""),
+        "encap": conn.get("encap", "") == "yes",
+        "mobike": conn.get("mobike", "") != "no",
+        "aggressive": conn.get("aggressive", "") == "yes",
+        "fragmentation": conn.get("fragmentation", "") != "no",
+        "child_rekey_time": child.get("rekey_time", ""),
+        "child_rekey_bytes": child.get("rekey_bytes", ""),
+        "replay_window": child.get("replay_window", ""),
+        "name": name,
+        "file": path,
+        "remote_addrs": conn.get("remote_addrs", ""),
+        "local_addrs": conn.get("local_addrs", ""),
+        "version": conn.get("version", "2"),
+        "vips": bool(conn.get("vips")),
+        "proposals": conn.get("proposals", ""),
+        "dpd_delay": conn.get("dpd_delay", ""),
+        "local_auth": local.get("auth", "pubkey"),
+        "local_id": lid,
+        "eap_id": eap_id,
+        "local_certs": local.get("certs", ""),
+        "remote_auth": remote.get("auth", "pubkey"),
+        "remote_id": rid,
+        "child_name": child_name or name,
+        "local_ts": child.get("local_ts", ""),
+        "remote_ts": child.get("remote_ts", ""),
+        "esp_proposals": child.get("esp_proposals", ""),
+        "dpd_action": child.get("dpd_action", ""),
+        "start_action": child.get("start_action", ""),
+        "has_psk": find_secret(secrets, "ike", name, [lid, rid]) is not None,
+        "has_eap": find_secret(secrets, "eap", name, [eap_id, lid]) is not None,
+    }
+
+
+def _set(d, key, val):
+    if val in ("", None, False):
+        d.pop(key, None)
+    else:
+        d[key] = val
+
+
+def _sub(conn, prefix):
+    for k, v in conn.items():
+        if k == prefix or (k.startswith(prefix) and isinstance(v, dict)):
+            if isinstance(v, dict):
+                return v
+    conn[prefix] = {}
+    return conn[prefix]
+
+
+def apply_view(conn, v):
+    _set(conn, "version", str(v.get("version") or "2"))
+    _set(conn, "remote_addrs", v.get("remote_addrs", "").strip())
+    _set(conn, "local_addrs", v.get("local_addrs", "").strip())
+    if v.get("vips"):
+        if not conn.get("vips"):
+            conn["vips"] = "0.0.0.0"
+    else:
+        conn.pop("vips", None)
+    _set(conn, "proposals", v.get("proposals", "").strip())
+    _set(conn, "dpd_delay", v.get("dpd_delay", "").strip())
+    if "rekey_time" in v:
+        _set(conn, "rekey_time", v["rekey_time"].strip())
+    if "encap" in v:
+        _set(conn, "encap", "yes" if v["encap"] else "")
+    if "mobike" in v:
+        _set(conn, "mobike", "" if v["mobike"] else "no")
+    if "aggressive" in v:
+        _set(conn, "aggressive", "yes" if v["aggressive"] else "")
+    if "fragmentation" in v:
+        _set(conn, "fragmentation", "" if v["fragmentation"] else "no")
+
+    local, remote = _sub(conn, "local"), _sub(conn, "remote")
+    # IKEv1 XAuth: second local authentication round
+    xkey = next((k for k, s in conn.items() if k.startswith("local") and isinstance(s, dict)
+                 and s is not local and s.get("auth", "").startswith("xauth")), None)
+    if v.get("xauth"):
+        if xkey is None:
+            xkey = "local-xauth"
+            conn[xkey] = {"auth": "xauth"}
+        _set(conn[xkey], "xauth_id", v.get("xauth_id", "").strip())
+    elif xkey is not None:
+        conn.pop(xkey)
+    local["auth"] = v.get("local_auth") or "pubkey"
+    _set(local, "id", v.get("local_id", "").strip())
+    if local["auth"].startswith("eap"):
+        _set(local, "eap_id", v.get("eap_id", "").strip())
+    else:
+        local.pop("eap_id", None)
+    _set(local, "certs", v.get("local_certs", "").strip() if local["auth"] in ("pubkey", "eap-tls") else "")
+    remote["auth"] = v.get("remote_auth") or "pubkey"
+    _set(remote, "id", v.get("remote_id", "").strip())
+
+    children = conn.setdefault("children", {})
+    old_child, child = first_child(conn)
+    new_child = check_name(v.get("child_name") or v["name"])
+    if old_child and old_child != new_child:
+        children[new_child] = children.pop(old_child)
+    child = children.setdefault(new_child, {})
+    for key in ("local_ts", "remote_ts", "esp_proposals", "dpd_action", "start_action"):
+        _set(child, key, v.get(key, "").strip())
+    for key, vkey in (("rekey_time", "child_rekey_time"), ("rekey_bytes", "child_rekey_bytes"),
+                      ("replay_window", "replay_window")):
+        if vkey in v:
+            _set(child, key, str(v[vkey]).strip())
+    # keep the canonical order for readability
+    order = ["version", "local_addrs", "remote_addrs", "vips", "proposals", "dpd_delay"]
+    items = sorted(conn.items(), key=lambda kv: order.index(kv[0]) if kv[0] in order else len(order))
+    conn.clear()
+    conn.update(items)
+
+
+def unique_name(base):
+    taken = {n for n, _, _ in all_connections()}
+    taken |= {f[:-5] for f in os.listdir(CONF_DIR) if f.endswith(".conf")} if os.path.isdir(CONF_DIR) else set()
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}-{n}" in taken:
+        n += 1
+    return f"{base}-{n}"
+
+
+def cmd_write(v):
+    check_opts(v)
+    for key, val in v.items():
+        if not isinstance(val, (str, bool, int, type(None))):
+            raise HelperError(tr("El campo {0} tiene un tipo no válido").format(key))
+        if isinstance(val, str):
+            check_text(val)
+    name = check_name(str(v.get("name", "")).strip())
+    orig = v.get("orig_name") or ""
+    if v.get("auto_rename") and not orig:
+        name = v["name"] = unique_name(name)
+    if not v.get("remote_addrs", "").strip():
+        raise HelperError(tr("Falta el servidor remoto"))
+    for key, val in v.items():
+        if isinstance(val, str) and ("\n" in val or "\r" in val):
+            raise HelperError(tr("El campo {0} no puede contener saltos de línea").format(key))
+
+    existing_path, _ = find_conn(name)
+    if orig:
+        check_name(orig)
+        path, _ = find_conn(orig)
+        if path is None:
+            raise HelperError(tr("La conexión «{0}» ya no existe").format(orig))
+        if name != orig and existing_path:
+            raise HelperError(tr("Ya existe una conexión llamada «{0}»").format(name))
+    else:
+        if existing_path:
+            raise HelperError(tr("Ya existe una conexión llamada «{0}»").format(name))
+        path = os.path.join(CONF_DIR, f"{name}.conf")
+        if os.path.exists(path):
+            raise HelperError(tr("El archivo {0} ya existe").format(path))
+
+    tree = load_file(path) if os.path.exists(path) else {}
+    conns = tree.setdefault("connections", {})
+    secrets = tree.setdefault("secrets", {})
+    if orig and orig != name:
+        # rename keeping position; also rename our own secret sections
+        conns_new = {}
+        for k, c in conns.items():
+            conns_new[name if k == orig else k] = c
+        tree["connections"] = conns = conns_new
+        for kind in ("ike", "eap", "xauth"):
+            if f"{kind}-{orig}" in secrets:
+                secrets[f"{kind}-{name}"] = secrets.pop(f"{kind}-{orig}")
+    conn = conns.setdefault(name, {})
+    apply_view(conn, v)
+
+    lid, rid = v.get("local_id", "").strip(), v.get("remote_id", "").strip()
+    eap_id = v.get("eap_id", "").strip() or lid
+    if v.get("psk"):
+        key = find_secret(secrets, "ike", name, [lid, rid])
+        if key is None:
+            key = f"ike-{name}"
+            secrets[key] = {}
+            owner = lid or (rid if rid not in ("", "%any") else "")
+            if owner:
+                secrets[key]["id"] = owner
+        secrets[key]["secret"] = v["psk"]
+    if v.get("eap_password") and v.get("local_auth", "").startswith("eap"):
+        key = find_secret(secrets, "eap", name, [eap_id, lid])
+        if key is None:
+            key = f"eap-{name}"
+            secrets[key] = {}
+            if eap_id:
+                secrets[key]["id"] = eap_id
+        secrets[key]["secret"] = v["eap_password"]
+    xauth_id = v.get("xauth_id", "").strip() or lid
+    if v.get("clear_user_secret"):
+        for kind, ids in (("eap", [eap_id, lid]), ("xauth", [xauth_id])):
+            key = find_secret(secrets, kind, name, ids)
+            if key is not None:
+                secrets.pop(key)
+    if v.get("xauth_password") and v.get("xauth"):
+        key = find_secret(secrets, "xauth", name, [xauth_id])
+        if key is None:
+            key = f"xauth-{name}"
+            secrets[key] = {}
+            if xauth_id:
+                secrets[key]["id"] = xauth_id
+        secrets[key]["secret"] = v["xauth_password"]
+    if not secrets:
+        tree.pop("secrets")
+    check_tree(tree)
+
+    if os.path.exists(path):
+        backup(path)
+    new_path = path
+    if orig and orig != name and os.path.basename(path) == f"{orig}.conf" and len(conns) == 1:
+        new_path = os.path.join(CONF_DIR, f"{name}.conf")
+    atomic_write(new_path, dump_text(tree))
+    if new_path != path:
+        os.unlink(path)
+    if orig and orig != name:
+        run_swanctl("--terminate", "--ike", orig, "--timeout", "10")
+    return {"ok": True, "name": name, "file": new_path, "load": reload_all()}
+
+
+def cmd_delete(name):
+    check_name(name)
+    path, _ = find_conn(name)
+    if path is None:
+        raise HelperError(tr("La conexión «{0}» no existe").format(name))
+    run_swanctl("--terminate", "--ike", name, "--timeout", "10")
+    dns_clear(name)
+    killswitch_off(name)
+    tree = load_file(path)
+    backup(path)
+    tree["connections"].pop(name, None)
+    secrets = tree.get("secrets", {})
+    for kind in ("ike", "eap", "xauth"):
+        secrets.pop(f"{kind}-{name}", None)
+    if not tree["connections"]:
+        os.unlink(path)
+    else:
+        atomic_write(path, dump_text(tree))
+    return {"ok": True, "load": reload_all()}
+
+
+# ---------------------------------------------------------------------------
+# runtime
+# ---------------------------------------------------------------------------
+
+def cmd_status():
+    conns = []
+    for path in conf_files():
+        try:
+            tree = load_file(path)
+        except (HelperError, OSError):
+            continue
+        for n, c in tree.get("connections", {}).items():
+            if not isinstance(c, dict):
+                continue
+            v = conn_to_view(n, path, tree)
+            user_auth = v["local_auth"].startswith("eap") and v["local_auth"] != "eap-tls" or v["xauth"]
+            has_pw = v["has_xauth"] if v["xauth"] else v["has_eap"]
+            conns.append({"name": n, "file": path, "remote": v["remote_addrs"],
+                          "child": v["child_name"], "remote_ts": v["remote_ts"],
+                          "certs": v["local_certs"], "version": v["version"],
+                          "user": v["xauth_id"] if v["xauth"] else (v["eap_id"] or v["local_id"]),
+                          "prompt": bool(user_auth and not has_pw)})
+    sas = {}
+    code, out = run_swanctl("--list-sas", "--pretty", timeout=15)
+    daemon = code == 0
+    if daemon:
+        text = re.sub(r"(?m)^list-sas reply \{\}\s*$", "", out)
+        counter = iter(range(1 << 30))
+        text = re.sub(r"(?m)^list-sa event \{", lambda m: f"ev{next(counter)} {{", text)
+        try:
+            events = parse(text).values()
+        except HelperError:
+            events = []
+        for tree in events:
+            if not isinstance(tree, dict):
+                continue
+            for name, sa in tree.items():
+                if not isinstance(sa, dict):
+                    continue
+                children = sa.get("child-sas", {})
+                bin_ = sum(int(c.get("bytes-in", 0)) for c in children.values() if isinstance(c, dict))
+                bout = sum(int(c.get("bytes-out", 0)) for c in children.values() if isinstance(c, dict))
+                child_up = any(isinstance(c, dict) and c.get("state") == "INSTALLED"
+                               for c in children.values())
+                prev = sas.get(name)
+                entry = {
+                    "state": sa.get("state", ""),
+                    "child_up": child_up,
+                    "vips": sa.get("local-vips", []),
+                    "remote_host": sa.get("remote-host", ""),
+                    "local_host": sa.get("local-host", ""),
+                    "established": int(sa.get("established", 0) or 0),
+                    "bytes_in": bin_,
+                    "bytes_out": bout,
+                }
+                # keep the best SA if several exist (e.g. during rekey)
+                if prev is None or (entry["state"] == "ESTABLISHED" and prev["state"] != "ESTABLISHED"):
+                    sas[name] = entry
+    return {"daemon": daemon, "daemon_msg": "" if daemon else out, "connections": conns, "sas": sas,
+            "dns": [c["name"] for c in conns if os.path.exists(f"/sys/class/net/{dns_ifname(c['name'])}")],
+            "killswitch": [c["name"] for c in conns if c["name"] in killswitch_active()]}
+
+
+def load_prompt_creds(name, path, creds):
+    """Load a one-shot user password without storing it in conf.d.
+
+    swanctl --load-creds replaces the whole set of shared secrets, so the
+    temporary file includes the regular configuration plus the extra secret.
+    """
+    for key in ("password", "username"):
+        val = creds.get(key) or ""
+        if not isinstance(val, str) or re.search(r"[\x00-\x1f\x7f]", val):
+            raise HelperError(tr("La contraseña o el usuario contienen caracteres no permitidos"))
+    v = conn_to_view(name, path, load_file(path))
+    user = creds.get("username") or (v["xauth_id"] if v["xauth"] else (v["eap_id"] or v["local_id"]))
+    kind = "xauth" if v["xauth"] else "eap"
+    sect = {"secret": creds["password"]}
+    if user:
+        sect["id"] = user
+    text = ("include swanctl.conf\n\n"
+            + "\n".join(dump({"secrets": {f"{kind}-swangui-prompt-{name}": sect}})) + "\n")
+    # must live in /etc/swanctl: cert/key directories are resolved relative to it
+    tmp = os.path.join(os.path.dirname(CONF_DIR), f".swangui-prompt-{name}.conf")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        code, out = run_swanctl("--load-creds", "--noprompt", "--file", tmp)
+    finally:
+        os.unlink(tmp)
+    if code != 0:
+        raise HelperError(tr("No se pudieron cargar las credenciales:\n") + out)
+
+
+def cmd_up(name, opts=None):
+    """opts: password (one-shot), timeout, dns {mode, domains, servers}, killswitch {allow_lan}"""
+    opts = opts or {}
+    check_name(name)
+    path, conn = find_conn(name)
+    if path is None:
+        raise HelperError(tr("La conexión «{0}» no existe").format(name))
+    if opts.get("password"):
+        load_prompt_creds(name, path, opts)
+    child = first_child(conn)[0]
+    try:
+        timeout = max(10, min(int(opts.get("timeout") or 45), 180))
+    except (TypeError, ValueError):
+        timeout = 45
+    args = ["--initiate", "--ike", name, "--timeout", str(timeout)]
+    if child:
+        args[1:1] = ["--child", child]
+    if opts.get("killswitch"):
+        # arm before connecting so nothing leaks while the tunnel comes up
+        killswitch_on(name, opts["killswitch"])
+    code, out = run_swanctl(*args, timeout=timeout + 15)
+    if code != 0:
+        raise HelperError(out or tr("No se pudo establecer la conexión"))
+    result = {"ok": True, "log": out}
+    dns = opts.get("dns") or {}
+    if dns.get("mode") in ("split", "all"):
+        try:
+            result["dns"] = dns_apply(name, dns, out)
+        except HelperError as e:
+            result["dns_error"] = str(e)
+    return result
+
+
+def cmd_down(name, opts=None):
+    check_name(name)
+    code, out = run_swanctl("--terminate", "--ike", name, "--timeout", "15", timeout=30)
+    dns_clear(name)
+    if not (opts or {}).get("keep_killswitch"):
+        killswitch_off(name)
+    if code != 0 and "no matching" not in out.lower():
+        raise HelperError(out or tr("No se pudo desconectar"))
+    return {"ok": True, "log": out}
+
+
+# ---------------------------------------------------------------------------
+# split DNS through systemd-resolved
+#
+# Policy-based IPsec has no tunnel interface, so a dummy link carries the
+# per-VPN DNS configuration. A host route to each VPN DNS server via that link,
+# with the virtual IP as source, makes resolved's queries match the IPsec
+# policy (selectors are src/dst based) and travel through the tunnel.
+# ---------------------------------------------------------------------------
+
+def dns_ifname(name):
+    return "swg-" + re.sub(r"[^A-Za-z0-9_-]", "_", name)[:11]
+
+
+def _run(*cmd, check=True):
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    if check and p.returncode != 0:
+        raise HelperError(f"{' '.join(cmd)}: {(p.stderr or p.stdout).strip()}")
+    return p
+
+
+def sa_info(name):
+    code, out = run_swanctl("--list-sas", "--ike", name, "--pretty", timeout=15)
+    if code != 0:
+        return {}
+    out = re.sub(r"(?m)^list-sas reply \{\}\s*$", "", out)
+    out = re.sub(r"(?m)^list-sa event \{", "ev {", out)
+    try:
+        return parse(out).get("ev", {}).get(name, {})
+    except HelperError:
+        return {}
+
+
+def vpn_dns_servers(name, initiate_log=""):
+    """DNS servers pushed by the gateway (Mode Config), from charon's log."""
+    text = initiate_log
+    if "installing DNS server" not in text:
+        p = subprocess.run(["journalctl", "-u", "strongswan", "--since", "-12h", "-o", "cat", "--no-pager"],
+                           capture_output=True, text=True, timeout=20)
+        text = p.stdout
+    servers = []
+    for line in text.splitlines():
+        if f"initiating IKE_SA {name}[" in line:
+            servers = []
+        m = re.search(r"installing DNS server (\S+)", line)
+        if m and m.group(1) not in servers:
+            servers.append(m.group(1))
+    return servers
+
+
+def dns_alive(server, src=None, timeout=2.0, tries=2):
+    """True if SERVER answers a DNS query at all (any rcode counts) from SRC."""
+    fam = socket.AF_INET6 if ":" in server else socket.AF_INET
+    for _ in range(tries):
+        qid = os.urandom(2)
+        # recursion desired, one question: ". IN NS"
+        pkt = qid + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + b"\x00\x00\x02\x00\x01"
+        with socket.socket(fam, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(timeout)
+            try:
+                if src:
+                    sock.bind((src, 0))
+                sock.sendto(pkt, (server, 53))
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    data, _ = sock.recvfrom(512)
+                    if data[:2] == qid:
+                        return True
+            except OSError:
+                pass
+    return False
+
+
+def probe_dns(servers, v4, v6):
+    """{server: alive} probing all servers in parallel through the tunnel."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, len(servers))) as pool:
+        res = pool.map(lambda srv: dns_alive(srv, v6 if ":" in srv else v4), servers)
+        return dict(zip(servers, res))
+
+
+def dns_apply(name, cfg, initiate_log=""):
+    mode = cfg.get("mode")
+    domains = [str(d).strip().lstrip("~.").strip().rstrip(".") for d in cfg.get("domains") or []
+               if str(d).strip()]
+    bad = [d for d in domains if not DOMAIN_RE.match(d)]
+    if bad:
+        raise HelperError(tr("Dominio DNS inválido: {0}").format(', '.join(bad)))
+    if mode == "split" and not domains:
+        raise HelperError(tr("DNS dividido: no hay dominios configurados"))
+    servers = [str(s) for s in cfg.get("servers") or [] if str(s).strip()] \
+        or vpn_dns_servers(name, initiate_log)
+    try:
+        servers = [str(ipaddress.ip_address(s.strip())) for s in servers]
+    except ValueError as e:
+        raise HelperError(tr("Servidor DNS inválido: {0}").format(e))
+    if not servers:
+        raise HelperError(tr("El servidor VPN no envió servidores DNS; configúralos a mano en la conexión"))
+    sa = sa_info(name)
+    if sa.get("state") != "ESTABLISHED":
+        raise HelperError(tr("El túnel no está conectado"))
+    # a DNS server outside the remote networks would not travel through the
+    # tunnel, and routing arbitrary addresses into the dummy link is not ours to do
+    path, _ = find_conn(name)
+    ts = [t.strip() for t in conn_to_view(name, path, load_file(path))["remote_ts"].split(",") if t.strip()]
+    remote = []
+    for t in ts or ["0.0.0.0/0", "::/0"]:
+        try:
+            remote.append(ipaddress.ip_network(t, strict=False))
+        except ValueError:
+            pass
+    outside = [srv for srv in servers if not any(ipaddress.ip_address(srv) in n for n in remote
+                                                 if n.version == ipaddress.ip_address(srv).version)]
+    if outside:
+        raise HelperError(tr("El DNS {0} no está dentro de las redes remotas de la VPN ({1}), así que no viajaría por el túnel").format(', '.join(outside), ', '.join(ts)))
+    vips = sa.get("local-vips", [])
+    v4 = next((v for v in vips if ":" not in v), None)
+    v6 = next((v for v in vips if ":" in v), None)
+    ifn = dns_ifname(name)
+    dns_clear(name)
+    _run("ip", "link", "add", ifn, "type", "dummy")
+    # resolved ignores links without an address for unicast DNS
+    for vip in (v4, v6):
+        if vip:
+            _run("ip", "addr", "add", f"{vip}/{128 if ':' in vip else 32}", "dev", ifn)
+    if not (v4 or v6):
+        _run("ip", "addr", "add", "169.254.253.1/32", "scope", "link", "dev", ifn)
+    _run("ip", "link", "set", ifn, "up")
+    for srv in servers:
+        src = v6 if ":" in srv else v4
+        cmd = ["ip", "route", "replace", srv, "dev", ifn]
+        if src:
+            cmd += ["src", src]
+        _run(*cmd)
+    # A gateway that pushes a dead DNS server (it happens) would leave these
+    # domains, or with mode "all" every name, unresolvable: keep the local DNS.
+    alive = probe_dns(servers, v4, v6)
+    dead = [srv for srv, ok in alive.items() if not ok]
+    servers = [srv for srv, ok in alive.items() if ok]
+    if not servers:
+        dns_clear(name)
+        raise HelperError(tr("El DNS de la VPN ({0}) no responde a través del túnel. Se mantiene tu DNS local para no dejarte sin navegación. Pide al administrador el DNS correcto o escríbelo a mano en Editar → Avanzada → DNS.").format(', '.join(dead)))
+    for srv in dead:
+        _run("ip", "route", "del", srv, "dev", ifn, check=False)
+    _run("resolvectl", "dns", ifn, *servers)
+    routing = ["~."] if mode == "all" else [f"~{d}" for d in domains]
+    _run("resolvectl", "domain", ifn, *routing)
+    _run("resolvectl", "default-route", ifn, "yes" if mode == "all" else "no")
+    for opt in ("llmnr", "mdns"):
+        _run("resolvectl", opt, ifn, "no", check=False)
+    _run("resolvectl", "flush-caches", check=False)
+    return {"servers": servers, "dead": dead, "domains": routing, "interface": ifn}
+
+
+def dns_clear(name):
+    ifn = dns_ifname(name)
+    if os.path.exists(f"/sys/class/net/{ifn}"):
+        _run("ip", "link", "del", ifn, check=False)
+        _run("resolvectl", "flush-caches", check=False)
+
+
+def cmd_dns_apply(name, cfg):
+    check_name(name)
+    if cfg.get("mode") not in ("split", "all"):
+        dns_clear(name)
+        return {"ok": True}
+    return {"ok": True, "dns": dns_apply(name, cfg)}
+
+
+# ---------------------------------------------------------------------------
+# kill switch (nftables): block traffic that should go through the VPN when
+# the tunnel is down. Split tunnel: block the remote networks in clear text.
+# Full tunnel: block everything except the gateway, the LAN and loopback.
+# ---------------------------------------------------------------------------
+
+def ks_table(name):
+    return "swangui_ks_" + re.sub(r"[^A-Za-z0-9_]", "_", name)
+
+
+def killswitch_active():
+    p = subprocess.run(["nft", "list", "tables", "inet"], capture_output=True, text=True, timeout=10)
+    names = set()
+    for line in p.stdout.splitlines():
+        m = re.match(r"table inet swangui_ks_(\S+)", line.strip())
+        if m:
+            names.add(m.group(1))
+    out = set()
+    for n, _, _ in all_connections():
+        if re.sub(r"[^A-Za-z0-9_]", "_", n) in names:
+            out.add(n)
+    return out
+
+
+def _resolve_all(host):
+    try:
+        return sorted({ai[4][0] for ai in socket.getaddrinfo(host, None)})
+    except OSError:
+        return []
+
+
+def _lan_networks(exclude=()):
+    """Directly connected networks, minus SwanGUI's DNS links and the VPN's own networks."""
+    nets = {4: set(), 6: set()}
+    for fam, flag in ((4, "-4"), (6, "-6")):
+        p = subprocess.run(["ip", flag, "route", "show", "table", "main", "scope", "link"],
+                           capture_output=True, text=True, timeout=10)
+        for line in p.stdout.splitlines():
+            dst = line.split()[0]
+            if dst == "default" or "linkdown" in line or re.search(r"\bdev swg-", line):
+                continue
+            try:
+                net = ipaddress.ip_network(dst, strict=False)
+            except ValueError:
+                continue
+            if any(net.version == x.version and net.overlaps(x) for x in exclude):
+                continue
+            nets[fam].add(str(net))
+    return nets
+
+
+BRIDGE_DEV = re.compile(r"\bdev (docker\d*|br-\S+|virbr\d+|podman\d*|cni\S*|lxcbr\d+|incusbr\d+)\b")
+
+
+def _bridge_networks():
+    """Networks behind local container/VM bridges (Docker, libvirt, Podman, LXC)."""
+    nets = {4: set(), 6: set()}
+    for fam, flag in ((4, "-4"), (6, "-6")):
+        p = subprocess.run(["ip", flag, "route", "show", "table", "main", "scope", "link"],
+                           capture_output=True, text=True, timeout=10)
+        for line in p.stdout.splitlines():
+            if BRIDGE_DEV.search(line):
+                try:
+                    nets[fam].add(str(ipaddress.ip_network(line.split()[0], strict=False)))
+                except ValueError:
+                    pass
+    return nets
+
+
+def _ks_rules(gws, lan, nets, full, allow_lan):
+    out = ["  rt ipsec exists accept"]
+    for g in gws:
+        out.append(f"  {'ip6' if ':' in g else 'ip'} daddr {g} accept")
+    if allow_lan:
+        if lan[4]:
+            out.append(f"  ip daddr {{ {', '.join(sorted(lan[4]))} }} accept")
+        out.append("  ip6 daddr { fe80::/10, ff00::/8 } accept")
+        if lan[6]:
+            out.append(f"  ip6 daddr {{ {', '.join(sorted(lan[6]))} }} accept")
+    if full:
+        out.append('  counter reject comment "swangui kill switch"')
+    else:
+        if nets[4]:
+            out.append(f"  ip daddr {{ {', '.join(nets[4])} }} counter reject")
+        if nets[6]:
+            out.append(f"  ip6 daddr {{ {', '.join(nets[6])} }} counter reject")
+    return out
+
+
+def killswitch_on(name, cfg):
+    path, conn = find_conn(name)
+    if path is None:
+        raise HelperError(tr("La conexión «{0}» no existe").format(name))
+    view = conn_to_view(name, path, load_file(path))
+    gws = []
+    for host in view["remote_addrs"].split(","):
+        host = host.strip()
+        if host and host != "%any":
+            gws += _resolve_all(host)
+    if not gws:
+        raise HelperError(tr("Kill switch: no se pudo resolver el gateway; no se activa para no dejarte sin conexión"))
+    ts = [t.strip() for t in view["remote_ts"].split(",") if t.strip()]
+    nets = {4: [], 6: []}
+    full = False
+    for t in ts or ["0.0.0.0/0"]:
+        try:
+            net = ipaddress.ip_network(t, strict=False)
+        except ValueError:
+            continue
+        if net.prefixlen == 0:
+            full = True
+        nets[net.version].append(str(net))
+    allow_lan = cfg.get("allow_lan", True)
+    lan = _lan_networks(exclude=[] if full else [ipaddress.ip_network(n) for n in nets[4] + nets[6]]) \
+        if allow_lan else {4: set(), 6: set()}
+    lines = [f"table inet {ks_table(name)} {{", " chain output {",
+             "  type filter hook output priority 0; policy accept;",
+             '  oifname "lo" accept',
+             "  udp dport { 67, 68, 546, 547 } accept"]
+    lines += _ks_rules(gws, lan, nets, full, allow_lan)
+    lines.append(" }")
+    bridges = _bridge_networks()
+    if cfg.get("forward", True) and (bridges[4] or bridges[6]):
+        # containers and VMs are routed, not locally generated: without this
+        # their traffic would bypass the output chain and leak in clear text
+        lines += [" chain forward {",
+                  "  type filter hook forward priority 0; policy accept;"]
+        if bridges[4]:
+            lines.append(f"  ip daddr {{ {', '.join(sorted(bridges[4]))} }} accept")
+        if bridges[6]:
+            lines.append(f"  ip6 daddr {{ {', '.join(sorted(bridges[6]))} }} accept")
+        lines += _ks_rules(gws, lan, nets, full, allow_lan)
+        lines.append(" }")
+    lines.append("}")
+    killswitch_off(name)
+    p = subprocess.run(["nft", "-f", "-"], input="\n".join(lines) + "\n",
+                       capture_output=True, text=True, timeout=15)
+    if p.returncode != 0:
+        raise HelperError(tr("Kill switch: ") + (p.stderr or p.stdout).strip())
+    return {"full": full, "gateways": gws, "bridges": sorted(bridges[4] | bridges[6])}
+
+
+def killswitch_off(name=None):
+    names = [name] if name else list(killswitch_active())
+    for n in names:
+        subprocess.run(["nft", "delete", "table", "inet", ks_table(n)],
+                       capture_output=True, text=True, timeout=10)
+
+
+# ---------------------------------------------------------------------------
+# certificates and diagnostics
+# ---------------------------------------------------------------------------
+
+def cert_info(path):
+    p = subprocess.run(["openssl", "x509", "-noout", "-subject", "-enddate", "-in", path],
+                       capture_output=True, text=True, timeout=10)
+    if p.returncode != 0:
+        p = subprocess.run(["openssl", "x509", "-inform", "DER", "-noout", "-subject", "-enddate",
+                            "-in", path], capture_output=True, text=True, timeout=10)
+    if p.returncode != 0:
+        return None
+    subject = re.search(r"subject=\s*(.*)", p.stdout)
+    end = re.search(r"notAfter=(.*)", p.stdout)
+    try:
+        ts = time.mktime(time.strptime(end.group(1).strip().replace("  ", " "), "%b %d %H:%M:%S %Y %Z"))
+    except (AttributeError, ValueError):
+        ts = 0
+    return {"subject": subject.group(1).strip() if subject else "", "not_after": int(ts)}
+
+
+def cmd_certs():
+    base = os.path.dirname(CONF_DIR)
+    out = []
+    for kind in ("x509", "x509ca"):
+        d = os.path.join(base, kind)
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            info = cert_info(os.path.join(d, f))
+            if info:
+                info.update({"file": f, "kind": "cliente" if kind == "x509" else "CA"})
+                out.append(info)
+    return {"certs": out}
+
+
+def cmd_diagnose(name, opts):
+    check_name(name)
+    steps = []
+
+    def step(title, ok, detail="", hint=""):
+        steps.append({"title": title, "ok": ok, "detail": detail, "hint": hint})
+        return ok
+
+    code, out = run_swanctl("--stats", timeout=10)
+    if not step(tr("Servicio strongSwan"), code == 0, "charon responde" if code == 0 else out,
+                "" if code == 0 else tr("Inicia el servicio: sudo systemctl start strongswan")):
+        return {"steps": steps}
+    path, _ = find_conn(name)
+    if path is None:
+        step(tr("Configuración"), False, tr("«{0}» no existe").format(name))
+        return {"steps": steps}
+    v = conn_to_view(name, path, load_file(path))
+    code, out = run_swanctl("--list-conns", timeout=10)
+    loaded = re.search(rf"(?m)^{re.escape(name)}:", out) is not None
+    step(tr("Configuración cargada en strongSwan"), loaded, path,
+         "" if loaded else tr("Hay un error de sintaxis o falta recargar: guarda la conexión otra vez"))
+
+    gws = []
+    for host in v["remote_addrs"].split(","):
+        host = host.strip()
+        if host:
+            gws += _resolve_all(host)
+    if not step(tr("Resolver el gateway"), bool(gws), f"{v['remote_addrs']} → {', '.join(gws) or 'sin respuesta'}",
+                "" if gws else tr("Revisa el nombre del gateway o tu conexión a internet/DNS")):
+        return {"steps": steps}
+    gw = gws[0]
+    p = subprocess.run(["ip", "route", "get", gw], capture_output=True, text=True, timeout=10)
+    step(tr("Ruta hacia el gateway"), p.returncode == 0, p.stdout.strip().splitlines()[0] if p.stdout else p.stderr.strip())
+    p = subprocess.run(["ping", "-c", "3", "-W", "2", "-q", gw], capture_output=True, text=True, timeout=15)
+    m = re.search(r"= [\d.]+/([\d.]+)/", p.stdout)
+    step(tr("El gateway responde a ping"), p.returncode == 0,
+         f"latencia media {m.group(1)} ms" if m else tr("sin respuesta"),
+         "" if p.returncode == 0 else tr("Muchos firewalls bloquean ping; no es necesariamente un problema"))
+
+    if v["remote_auth"] == "psk":
+        step(tr("Clave precompartida guardada"), v["has_psk"], "",
+             "" if v["has_psk"] else tr("Edita la conexión y escribe la clave precompartida"))
+    user_auth = v["local_auth"].startswith("eap") and v["local_auth"] != "eap-tls" or v["xauth"]
+    if user_auth:
+        has_pw = v["has_xauth"] if v["xauth"] else v["has_eap"]
+        step(tr("Contraseña de usuario"), True,
+             "guardada" if has_pw else tr("se pide al conectar"))
+    now = time.time()
+    for f in filter(None, (c.strip() for c in v["local_certs"].split(","))):
+        info = cert_info(os.path.join(os.path.dirname(CONF_DIR), "x509", f))
+        if info is None:
+            step(tr("Certificado {0}").format(f), False, tr("no se encuentra o no se puede leer"),
+                 tr("Copia el certificado a /etc/swanctl/x509 y la clave a /etc/swanctl/private"))
+        else:
+            days = int((info["not_after"] - now) // 86400)
+            step(tr("Certificado {0}").format(f), days > 0, tr("caduca en {0} días").format(days) if days > 0 else tr("CADUCADO"),
+                 "" if days > 0 else tr("Pide un certificado nuevo al administrador"))
+
+    sa = sa_info(name)
+    if sa.get("state") == "ESTABLISHED":
+        vips = sa.get("local-vips", [])
+        step(tr("Túnel"), True, f"conectado, IP virtual {', '.join(vips) or '-'}")
+        servers = [str(s) for s in (opts.get("dns_servers") or []) if str(s).strip()] or vpn_dns_servers(name)
+        if servers:
+            v4 = next((x for x in vips if ":" not in x), None)
+            v6 = next((x for x in vips if ":" in x), None)
+            try:
+                alive = probe_dns([str(ipaddress.ip_address(x.strip())) for x in servers], v4, v6)
+            except ValueError as e:
+                alive, servers = {}, [tr("inválido: {0}").format(e)]
+            dead = [x for x, ok in alive.items() if not ok]
+            step(tr("DNS de la VPN responde"), bool(alive) and not dead,
+                 ", ".join(f"{x} {'responde' if ok else 'NO responde'}" for x, ok in alive.items())
+                 or ", ".join(servers),
+                 "" if alive and not dead else
+                 tr("Ese DNS no contesta por el túnel. No uses «Todo el DNS por la VPN»; pide al administrador el DNS correcto y escríbelo en Editar → Avanzada → DNS"))
+    elif opts.get("try"):
+        if opts.get("password"):
+            load_prompt_creds(name, path, opts)
+        child = v["child_name"]
+        code, out = run_swanctl("--initiate", "--child", child, "--ike", name, "--timeout", "30",
+                                "--loglevel", "2", timeout=45)
+        steps.append({"title": tr("Conexión de prueba"), "ok": code == 0, "detail": "",
+                      "hint": "", "log": out})
+        if code == 0 and not opts.get("keep"):
+            run_swanctl("--terminate", "--ike", name, "--timeout", "10")
+    else:
+        step(tr("Túnel"), True, tr("desconectado (no se intentó conectar)"))
+    return {"steps": steps}
+
+
+def cmd_read(name):
+    check_name(name)
+    path, _ = find_conn(name)
+    if path is None:
+        raise HelperError(tr("La conexión «{0}» no existe").format(name))
+    return conn_to_view(name, path, load_file(path))
+
+
+def cmd_read_raw(name):
+    check_name(name)
+    path, _ = find_conn(name)
+    if path is None:
+        raise HelperError(tr("La conexión «{0}» no existe").format(name))
+    with open(path, encoding="utf-8") as f:
+        return {"file": path, "text": f.read()}
+
+
+def cmd_write_raw(name, text):
+    check_name(name)
+    path, _ = find_conn(name)
+    if path is None:
+        raise HelperError(tr("La conexión «{0}» no existe").format(name))
+    tree = parse(check_text(text))  # syntax check before touching anything
+    check_tree(tree)
+    others = {n for n, p, _ in all_connections() if p != path}
+    clash = others & set(tree.get("connections", {}))
+    if clash:
+        raise HelperError(tr("Esas conexiones ya existen en otro archivo: {0}").format(', '.join(sorted(clash))))
+    backup(path)
+    atomic_write(path, text if text.endswith("\n") else text + "\n")
+    return {"ok": True, "load": reload_all()}
+
+
+def conn_secrets(name, tree):
+    """{section: dict} of the secrets that belong to connection NAME."""
+    v = conn_to_view(name, "", tree)
+    secrets = tree.get("secrets", {})
+    out = {}
+    for kind, ids in (("ike", [v["local_id"], v["remote_id"]]),
+                      ("eap", [v["eap_id"], v["local_id"]]),
+                      ("xauth", [v["xauth_id"]])):
+        key = find_secret(secrets, kind, name, ids)
+        if key is not None:
+            out[key] = secrets[key]
+    return out
+
+
+def cmd_export(name, with_secrets):
+    check_name(name)
+    path, _ = find_conn(name)
+    if path is None:
+        raise HelperError(tr("La conexión «{0}» no existe").format(name))
+    tree = load_file(path)
+    view = conn_to_view(name, path, tree)
+    sec = conn_secrets(name, tree)
+    out_tree = {"connections": {name: tree["connections"][name]}}
+    result = {"view": view}
+    if with_secrets:
+        out_tree["secrets"] = sec
+        result["secrets"] = {
+            "psk": next((s.get("secret", "") for k, s in sec.items() if k.startswith("ike")), ""),
+            "password": next((s.get("secret", "") for k, s in sec.items()
+                              if k.startswith("eap") or k.startswith("xauth")), ""),
+        }
+    result["swanctl"] = "\n".join(dump(out_tree)).rstrip() + "\n"
+    return result
+
+
+def cmd_import(text):
+    tree = parse(check_text(text))
+    check_tree(tree)
+    conns = {k: c for k, c in tree.get("connections", {}).items() if isinstance(c, dict)}
+    if not conns:
+        raise HelperError(tr("El archivo no contiene ninguna conexión (sección «connections»)"))
+    imported = []
+    for name, conn in conns.items():
+        check_name(name)
+        new = unique_name(name)
+        sec = conn_secrets(name, tree)
+        # our own secret names follow the connection name
+        sec = {(k.replace(f"-{name}", f"-{new}", 1) if k.endswith(f"-{name}") else k): s
+               for k, s in sec.items()}
+        out = {"connections": {new: conn}}
+        if sec:
+            out["secrets"] = sec
+        atomic_write(os.path.join(CONF_DIR, f"{new}.conf"), dump_text(out))
+        imported.append({"from": name, "name": new})
+    return {"ok": True, "imported": imported, "load": reload_all()}
+
+
+QUIET = {"status", "read", "certs", "diagnose", "dns-apply"}
+
+
+def audit(args):
+    """Record who did what in the system journal (never the stdin data: it may hold passwords)."""
+    if args[0] in QUIET:
+        return
+    syslog.openlog("swangui-helper", 0, syslog.LOG_AUTHPRIV)
+    syslog.syslog(syslog.LOG_NOTICE, f"uid={os.environ.get('PKEXEC_UID', '?')} {' '.join(args)[:300]}")
+
+
+def main():
+    if os.geteuid() != 0:
+        raise HelperError(tr("El helper debe ejecutarse como root (pkexec)"))
+    args = sys.argv[1:]
+    if not args:
+        raise HelperError(tr("Falta el comando"))
+    os.umask(0o077)
+    audit(args)
+    cmd, rest = args[0], args[1:]
+    if cmd == "status":
+        return cmd_status()
+    if cmd == "read" and len(rest) == 1:
+        return cmd_read(rest[0])
+    if cmd == "write":
+        return cmd_write(json.load(sys.stdin))
+    if cmd == "delete" and len(rest) == 1:
+        return cmd_delete(rest[0])
+    if cmd == "read-raw" and len(rest) == 1:
+        return cmd_read_raw(rest[0])
+    if cmd == "write-raw" and len(rest) == 1:
+        return cmd_write_raw(rest[0], sys.stdin.read())
+    if cmd in ("up", "down", "dns-apply", "killswitch-on", "diagnose") and len(rest) == 1:
+        data = sys.stdin.read().strip()
+        opts = check_opts(json.loads(data) if data else {})
+        check_name(rest[0])
+        if cmd == "up":
+            return cmd_up(rest[0], opts)
+        if cmd == "down":
+            return cmd_down(rest[0], opts)
+        if cmd == "dns-apply":
+            return cmd_dns_apply(rest[0], opts)
+        if cmd == "killswitch-on":
+            return {"ok": True, **killswitch_on(rest[0], opts)}
+        return cmd_diagnose(rest[0], opts)
+    if cmd == "dns-clear" and len(rest) == 1:
+        dns_clear(check_name(rest[0]))
+        return {"ok": True}
+    if cmd == "killswitch-off":
+        killswitch_off(check_name(rest[0]) if rest else None)
+        return {"ok": True}
+    if cmd == "certs":
+        return cmd_certs()
+    if cmd == "export" and len(rest) == 2:
+        return cmd_export(rest[0], rest[1] == "secrets")
+    if cmd == "import":
+        return cmd_import(sys.stdin.read())
+    if cmd == "reload":
+        return {"ok": True, "load": reload_all()}
+    raise HelperError(tr("Comando desconocido: {0}").format(' '.join(args)))
+
+
+if __name__ == "__main__":
+    try:
+        result = main()
+        json.dump(result, sys.stdout)
+    except (HelperError, OSError, subprocess.TimeoutExpired, ValueError, TypeError, KeyError) as e:
+        json.dump({"error": str(e)}, sys.stdout)
+        sys.exit(1)

@@ -1,0 +1,26 @@
+# Maintainer: Frank <FrankMncrf@users.noreply.github.com>
+pkgname=swangui
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="FortiClient-style IPsec VPN client for strongSwan, with tray icon"
+arch=('any')
+url="https://github.com/FrankMncrf/SwanGUI"
+license=('GPL-3.0-or-later')
+depends=('python' 'python-pyqt6' 'strongswan' 'polkit' 'nftables' 'iproute2' 'systemd' 'openssl' 'iputils')
+optdepends=('python-cryptography: password-protected exports'
+            'libsecret: keep user passwords in the system keyring'
+            'networkmanager: trusted networks and captive portal detection'
+            'polkit-gnome: authentication agent for desktops without one')
+checkdepends=('python-cryptography')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+check() {
+    cd "SwanGUI-$pkgver"
+    QT_QPA_PLATFORM=offscreen make test
+}
+
+package() {
+    cd "SwanGUI-$pkgver"
+    make install DESTDIR="$pkgdir" PREFIX=/usr
+}
