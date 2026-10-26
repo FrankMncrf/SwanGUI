@@ -32,6 +32,7 @@
  "<small>Con DNS dividido solo esos dominios se resuelven con el DNS de la empresa; el resto sigue usando tu DNS local y no pierdes la navegación.</small>": "<small>With split DNS only those domains are resolved by the company DNS; everything else keeps using your local DNS, so browsing keeps working.</small>",
  "<small>También desde la terminal: <code>swangui status</code>, <code>swangui connect NOMBRE</code>, <code>swangui disconnect NOMBRE</code>, <code>swangui toggle NOMBRE</code>, <code>swangui list</code>.</small>": "<small>Also from the terminal: <code>swangui status</code>, <code>swangui connect NAME</code>, <code>swangui disconnect NAME</code>, <code>swangui toggle NAME</code>, <code>swangui list</code>.</small>",
  "ACTIVO — bloqueando tráfico": "ACTIVE — blocking traffic",
+ "Abrir en mi cartera": "Open in my wallet",
  "Acciones de SwanGUI": "SwanGUI actions",
  "Acción:": "Action:",
  "Acerca de SwanGUI": "About SwanGUI",

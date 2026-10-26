@@ -3356,9 +3356,9 @@ REPO_URL = "https://github.com/FrankMncrf/SwanGUI"
 RELEASES_API = "https://api.github.com/repos/FrankMncrf/SwanGUI/releases/latest"
 # donation targets; an empty value hides that option
 DONATE = {
-    "bmc": "",       # https://buymeacoffee.com/<user>
-    "paypal": "",    # https://paypal.me/<user>
-    "btc": "",       # bitcoin address
+    "bmc": "https://buymeacoffee.com/FrankMncrf",
+    "paypal": "",
+    "btc": "bc1qm45kpx35uazdts3q8vc77edqwyajuxe9cexw0er5409dyevl3nysxhln9g",
 }
 THIRD_PARTY = [
     ("strongSwan", "GPL-2.0-or-later", "https://www.strongswan.org"),
@@ -3511,9 +3511,12 @@ class Help(QObject):
             addr.setReadOnly(True)
             copy = QPushButton(tr("Copiar"))
             copy.clicked.connect(lambda: QApplication.clipboard().setText(DONATE["btc"]))
+            wallet = QPushButton(tr("Abrir en mi cartera"))
+            wallet.clicked.connect(lambda: open_url(f"bitcoin:{DONATE['btc']}?message=Donaciones%20SwanGUI"))
             row.addWidget(QLabel("₿ Bitcoin:"))
             row.addWidget(addr, 1)
             row.addWidget(copy)
+            row.addWidget(wallet)
             lay.addLayout(row)
         star = QPushButton(tr("★  Dar una estrella en GitHub"))
         star.clicked.connect(self.repo)

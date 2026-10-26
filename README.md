@@ -77,7 +77,13 @@ swangui status | list | connect NOMBRE | disconnect NOMBRE | toggle NOMBRE
 
 Reporta errores y sugerencias en [Issues](https://github.com/FrankMncrf/SwanGUI/issues) o [Discussions](https://github.com/FrankMncrf/SwanGUI/discussions) (también desde *Ayuda → Reportar un error*). Las pruebas se ejecutan con `make test`.
 
-Si SwanGUI te resulta útil, puedes apoyarlo desde *Ayuda → Donar*.
+## Apoyar el proyecto
+
+Si SwanGUI te resulta útil, puedes apoyarlo (también desde *Ayuda → Donar*):
+
+- ☕ [Buy Me a Coffee](https://buymeacoffee.com/FrankMncrf)
+- ₿ Bitcoin: `bc1qm45kpx35uazdts3q8vc77edqwyajuxe9cexw0er5409dyevl3nysxhln9g`
+- ⭐ Una estrella en GitHub también ayuda.
 
 ## Licencia
 
