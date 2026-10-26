@@ -1,5 +1,11 @@
 # Novedades
 
+## 1.0.1 — 2026-10-25
+
+- Los avisos de conexión, desconexión y errores se muestran en un globo propio de SwanGUI junto al icono de la bandeja, como en FortiClient.
+- Nueva opción en Preferencias → General → «Estilo de los avisos» para volver a las notificaciones del escritorio.
+- El README incluye los enlaces de descarga de los paquetes.
+
 ## 1.0.0 — 2026-10-25
 
 Primera versión pública.

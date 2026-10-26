@@ -3357,7 +3357,7 @@ class LogWindow(QDialog):
 # help menu: about, project links, bug reports, donations, updates
 # ---------------------------------------------------------------------------
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 REPO_URL = "https://github.com/FrankMncrf/SwanGUI"
 RELEASES_API = "https://api.github.com/repos/FrankMncrf/SwanGUI/releases/latest"
 # donation targets; an empty value hides that option

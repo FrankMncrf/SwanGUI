@@ -1,5 +1,5 @@
 Name:           swangui
-Version:        1.0.0
+Version:        1.0.1
 Release:        1%{?dist}
 Summary:        FortiClient-style IPsec VPN client for strongSwan
 License:        GPL-3.0-or-later
@@ -46,5 +46,8 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix} LIBDIR=%{_prefix}/lib/swangu
 %{_licensedir}/%{name}/
 
 %changelog
-* Sun Oct 25 2026 Frank <FrankMncrf@users.noreply.github.com> - 1.0.0-1
+* Sun Oct 25 2026 Frank <frank@swangui.invalid> - 1.0.1-1
+- Own notification bubble next to the tray icon
+
+* Sun Oct 25 2026 Frank <frank@swangui.invalid> - 1.0.0-1
 - First public release
