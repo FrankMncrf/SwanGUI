@@ -13,7 +13,7 @@ optdepends=('python-cryptography: password-protected exports'
             'polkit-gnome: authentication agent for desktops without one')
 checkdepends=('python-cryptography')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('9f96bc2593a703b8f08ab512670ec55ae27299380089885450c80b28d02fe014')
+sha256sums=('df458941f553e46935737b76388640fa822852daaf64cf4da596b50e3034e5d6')
 
 check() {
     cd "SwanGUI-$pkgver"
