@@ -735,6 +735,7 @@ def cmd_up(name, opts=None):
             result["dns"] = dns_apply(name, dns, out)
         except HelperError as e:
             result["dns_error"] = str(e)
+            log_error(["up", name, "dns"], e)
     return result
 
 
@@ -1284,6 +1285,8 @@ def cmd_import(text):
 
 
 QUIET = {"status", "read", "certs", "diagnose", "dns-apply"}
+# polled every few seconds: a persistent failure would flood the journal
+NOISY = {"status", "certs"}
 
 
 def audit(args):
@@ -1292,6 +1295,15 @@ def audit(args):
         return
     syslog.openlog("swangui-helper", 0, syslog.LOG_AUTHPRIV)
     syslog.syslog(syslog.LOG_NOTICE, f"uid={os.environ.get('PKEXEC_UID', '?')} {' '.join(args)[:300]}")
+
+
+def log_error(args, msg):
+    """Keep failures in the journal too: the GUI only shows them in memory, and
+    a DNS failure inside `up` is not an error of the command at all."""
+    if not args or args[0] in NOISY:
+        return
+    syslog.openlog("swangui-helper", 0, syslog.LOG_AUTHPRIV)
+    syslog.syslog(syslog.LOG_WARNING, f"{' '.join(args)[:100]}: {' '.join(str(msg).split())[:800]}")
 
 
 def main():
@@ -1350,5 +1362,6 @@ if __name__ == "__main__":
         result = main()
         json.dump(result, sys.stdout)
     except (HelperError, OSError, subprocess.TimeoutExpired, ValueError, TypeError, KeyError) as e:
+        log_error(sys.argv[1:], e)
         json.dump({"error": str(e)}, sys.stdout)
         sys.exit(1)

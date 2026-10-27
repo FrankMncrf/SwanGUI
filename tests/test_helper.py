@@ -142,5 +142,18 @@ class KillSwitchRuleTests(unittest.TestCase):
         self.assertFalse(any("fe80" in r for r in rules))
 
 
+class LogErrorTests(unittest.TestCase):
+    def test_failures_reach_the_journal(self):
+        from unittest import mock
+        with mock.patch.object(h.syslog, "openlog"), mock.patch.object(h.syslog, "syslog") as log:
+            h.log_error(["up", "office", "dns"], h.HelperError("DNS 10.0.0.53\nno responde"))
+            h.log_error(["status"], "polled, would flood")
+            h.log_error(["certs"], "polled, would flood")
+        self.assertEqual(log.call_count, 1)
+        prio, msg = log.call_args.args
+        self.assertEqual(prio, h.syslog.LOG_WARNING)
+        self.assertEqual(msg, "up office dns: DNS 10.0.0.53 no responde")
+
+
 if __name__ == "__main__":
     unittest.main()
