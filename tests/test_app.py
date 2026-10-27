@@ -155,6 +155,25 @@ class AppStartTests(unittest.TestCase):
         app.settings.data["connections"]["office"]["latency_host"] = "10.1.1.1"
         self.assertEqual(app._latency_targets("office"), ["10.1.1.1"])
 
+    def test_totals_survive_rekey(self):
+        app = g.SwanGUI.__new__(g.SwanGUI)
+        app.byte_base = {}
+
+        def poll(bin_, bout, est):
+            app.status = {"sas": {"office": {"bytes_in": bin_, "bytes_out": bout, "established": est}}}
+            app._keep_totals()
+            sa = app.status["sas"]["office"]
+            return sa["bytes_in"], sa["bytes_out"]
+
+        self.assertEqual(poll(1000, 100, 10), (1000, 100))
+        self.assertEqual(poll(5000, 500, 3600), (5000, 500))
+        self.assertEqual(poll(200, 20, 3604), (5200, 520))      # CHILD_SA rekeyed: counters restart
+        self.assertEqual(poll(900, 90, 3608), (5900, 590))
+        self.assertEqual(poll(50, 5, 3), (50, 5))               # reconnected: a new total
+        app.status = {"sas": {}}
+        app._keep_totals()
+        self.assertEqual(app.byte_base, {})                     # disconnected: forgotten
+
     def test_quality(self):
         app = g.SwanGUI.__new__(g.SwanGUI)
         app.samples = {"a": [(i, 0, 0, 300.0 if i % 2 else None) for i in range(15)],

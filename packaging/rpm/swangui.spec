@@ -1,5 +1,5 @@
 Name:           swangui
-Version:        1.0.5
+Version:        1.0.6
 Release:        1%{?dist}
 Summary:        FortiClient-style IPsec VPN client for strongSwan
 License:        GPL-3.0-or-later
@@ -46,6 +46,10 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix} LIBDIR=%{_prefix}/lib/swangu
 %{_licensedir}/%{name}/
 
 %changelog
+* Tue Oct 27 2026 Frank <frank@swangui.invalid> - 1.0.6-1
+- TCP MSS clamping for traffic through the tunnel (fixes stalled connections)
+- Total traffic no longer resets when the CHILD_SA is rekeyed
+
 * Tue Oct 27 2026 Frank <frank@swangui.invalid> - 1.0.5-1
 - Narrower main window, traffic graph with time ranges, axes and grid
 - Graph data of the current session survives restarts (last hour only)

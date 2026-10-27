@@ -155,5 +155,26 @@ class LogErrorTests(unittest.TestCase):
         self.assertEqual(msg, "up office dns: DNS 10.0.0.53 no responde")
 
 
+class MssTests(unittest.TestCase):
+    def test_rules_only_touch_ipsec_syns(self):
+        from unittest import mock
+        with mock.patch.object(h.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+            h.mss_clamp_on()
+        script = run.call_args_list[-1].kwargs["input"]
+        self.assertIn("table inet swangui_mss {", script)
+        self.assertIn("rt ipsec exists meta nfproto ipv4 tcp flags & (syn|rst) == syn "
+                      "tcp option maxseg size > 1360 tcp option maxseg size set 1360", script)
+        self.assertIn("meta ipsec exists meta nfproto ipv6", script)
+        self.assertEqual(script.count("maxseg size set"), 4)  # in and out, IPv4 and IPv6
+
+    def test_removed_with_the_last_tunnel(self):
+        from unittest import mock
+        with mock.patch.object(h, "run_swanctl", return_value=(0, "neocom: #1, ESTABLISHED, IKEv2, a_i* b_r")):
+            self.assertTrue(h.active_sas())
+        with mock.patch.object(h, "run_swanctl", return_value=(0, "")):
+            self.assertFalse(h.active_sas())
+
+
 if __name__ == "__main__":
     unittest.main()

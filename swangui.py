@@ -2782,6 +2782,10 @@ class EditorDialog(QDialog):
         vpn.form.addRow("", self.fragmentation)
         vpn.form.addRow(tr("Redes locales:"), self.local_ts)
         vpn.form.addRow("", self.autostart)
+        self.mss = QCheckBox(tr("Ajustar el tamaño de los paquetes TCP (evita webs o copias que se quedan colgadas)"))
+        self.mss.setChecked(True)
+        self.mss.setToolTip(tr("El cifrado añade bytes a cada paquete y los más grandes dejan de caber. Si la red bloquea el aviso que lo indica, las conexiones se quedan colgadas a mitad. Se ajusta solo el tráfico que va por la VPN (MSS 1360)."))
+        vpn.form.addRow("", self.mss)
         self.vpn_section = vpn
 
         # --- phase 1
@@ -2948,6 +2952,7 @@ class EditorDialog(QDialog):
         self.ks_lan.setChecked(meta.get("killswitch_lan", True))
         self.ks_fwd.setChecked(meta.get("killswitch_fwd", True))
         self.latency_host.setText(meta.get("latency_host", ""))
+        self.mss.setChecked(meta.get("mss_clamp", True))
         if self.copying:
             self.name.setText(f"{data['name']}-copia")
             self.psk.setText(copy_secrets.get("psk", ""))
@@ -3145,7 +3150,8 @@ class EditorDialog(QDialog):
                 "killswitch": self.killswitch.isChecked(),
                 "killswitch_lan": self.ks_lan.isChecked(),
                 "killswitch_fwd": self.ks_fwd.isChecked(),
-                "latency_host": self.latency_host.text().strip()}
+                "latency_host": self.latency_host.text().strip(),
+                "mss_clamp": self.mss.isChecked()}
 
     def _apply_template(self):
         t = TEMPLATES.get(self.template.currentData())
@@ -3622,7 +3628,7 @@ class LogWindow(QDialog):
 # help menu: about, project links, bug reports, donations, updates
 # ---------------------------------------------------------------------------
 
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 REPO_URL = "https://github.com/FrankMncrf/SwanGUI"
 RELEASES_API = "https://api.github.com/repos/FrankMncrf/SwanGUI/releases/latest"
 # donation targets; an empty value hides that option
@@ -4573,6 +4579,7 @@ class SwanGUI(QObject):
         self.samples = {n: deque(rows, maxlen=GRAPH_POINTS) for n, rows in TrafficStore.load().items()}
         # name -> deque of (t, rx/s, tx/s, latency), the last hour also on disk
         self.last_bytes = {}       # name -> (t, bytes_in, bytes_out)
+        self.byte_base = {}        # name -> (bytes of earlier CHILD_SAs, last raw counters, IKE SA age)
         self.latency = {}          # name -> ms
         self.lat_pick = {}         # name -> index of the latency target in use
         self.lat_fail = {}         # name -> pings in a row without answer
@@ -4676,6 +4683,7 @@ class SwanGUI(QObject):
             self.status["daemon_msg"] = data["error"]
         else:
             self.status = data
+            self._keep_totals()
         self._sample_traffic()
         self._history()
         self._notify_changes()
@@ -4712,6 +4720,22 @@ class SwanGUI(QObject):
         for name in list(self.samples):
             if self.state_of(name) in ("down", "error"):  # disconnected: the next session starts a new graph
                 self.samples.pop(name)
+
+    def _keep_totals(self):
+        """strongSwan counts bytes per CHILD_SA and the hourly rekey starts a new one at zero:
+        add up the previous ones so the totals cover the whole connection."""
+        sas = self.status.get("sas", {})
+        for name, sa in sas.items():
+            raw, est = (sa["bytes_in"], sa["bytes_out"]), sa.get("established", 0)
+            base, prev, prev_est = self.byte_base.get(name, ((0, 0), raw, est))
+            if raw[0] < prev[0] or raw[1] < prev[1]:
+                # a new IKE SA as well means a reconnection: that one starts from zero
+                base = (0, 0) if est < prev_est else (base[0] + prev[0], base[1] + prev[1])
+            self.byte_base[name] = (base, raw, est)
+            sa["bytes_in"], sa["bytes_out"] = raw[0] + base[0], raw[1] + base[1]
+        for name in list(self.byte_base):
+            if name not in sas:  # disconnected
+                del self.byte_base[name]
 
     def _save_traffic(self):
         try:
@@ -5350,6 +5374,7 @@ class SwanGUI(QObject):
         if meta.get("killswitch"):
             opts["killswitch"] = {"allow_lan": meta.get("killswitch_lan", True),
                                   "forward": meta.get("killswitch_fwd", True)}
+        opts["mss"] = meta.get("mss_clamp", True)
         self.manual_down.discard(name)
         self.busy[name] = "connecting"
         self.errors.discard(name)
@@ -5795,6 +5820,7 @@ def cli(args):
             if meta.get("killswitch"):
                 opts["killswitch"] = {"allow_lan": meta.get("killswitch_lan", True),
                                   "forward": meta.get("killswitch_fwd", True)}
+            opts["mss"] = meta.get("mss_clamp", True)
             if meta.get("otp") == "push":
                 opts["timeout"] = 120
                 print(tr("Aprueba la conexión en tu móvil…"))

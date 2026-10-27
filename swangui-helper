@@ -725,6 +725,11 @@ def cmd_up(name, opts=None):
     if opts.get("killswitch"):
         # arm before connecting so nothing leaks while the tunnel comes up
         killswitch_on(name, opts["killswitch"])
+    if opts.get("mss", True) is not False:
+        try:
+            mss_clamp_on()
+        except HelperError as e:  # a missing tweak must not stop the connection
+            log_error(["up", name, "mss"], e)
     code, out = run_swanctl(*args, timeout=timeout + 15)
     if code != 0:
         raise HelperError(out or tr("No se pudo establecer la conexión"))
@@ -745,6 +750,8 @@ def cmd_down(name, opts=None):
     dns_clear(name)
     if not (opts or {}).get("keep_killswitch"):
         killswitch_off(name)
+    if not active_sas():
+        mss_clamp_off()
     if code != 0 and "no matching" not in out.lower():
         raise HelperError(out or tr("No se pudo desconectar"))
     return {"ok": True, "log": out}
@@ -923,6 +930,47 @@ def cmd_dns_apply(name, cfg):
 # the tunnel is down. Split tunnel: block the remote networks in clear text.
 # Full tunnel: block everything except the gateway, the LAN and loopback.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# TCP MSS clamping
+#
+# ESP adds ~60-80 bytes, so a full-size packet no longer fits the path once
+# encrypted. When the ICMP "fragmentation needed" messages are filtered on
+# the way (common), TCP connections through the tunnel stall as soon as they
+# send a full-size segment: web pages that never finish, SMB copies that hang.
+# Lowering the MSS announced in SYN packets that use IPsec avoids it.
+# ---------------------------------------------------------------------------
+
+MSS_TABLE = "swangui_mss"
+MSS = {"ipv4": 1360, "ipv6": 1340}  # packets of 1400 bytes: fits behind PPPoE, NAT-T and ESP
+
+
+def _mss_rules(match):
+    return [f"  {match} meta nfproto {fam} tcp flags & (syn|rst) == syn "
+            f"tcp option maxseg size > {size} tcp option maxseg size set {size}" for fam, size in MSS.items()]
+
+
+def mss_clamp_on():
+    lines = [f"table inet {MSS_TABLE} {{",
+             " chain postrouting {",  # our SYNs (and containers') going into the tunnel
+             "  type filter hook postrouting priority mangle; policy accept;", *_mss_rules("rt ipsec exists"), " }",
+             " chain prerouting {",   # the other side's SYN-ACKs coming out of it
+             "  type filter hook prerouting priority mangle; policy accept;", *_mss_rules("meta ipsec exists"), " }",
+             "}"]
+    mss_clamp_off()
+    p = subprocess.run(["nft", "-f", "-"], input="\n".join(lines) + "\n", capture_output=True, text=True, timeout=15)
+    if p.returncode != 0:
+        raise HelperError("MSS: " + (p.stderr or p.stdout).strip())
+
+
+def mss_clamp_off():
+    subprocess.run(["nft", "delete", "table", "inet", MSS_TABLE], capture_output=True, text=True, timeout=10)
+
+
+def active_sas():
+    code, out = run_swanctl("--list-sas", timeout=15)
+    return code == 0 and bool(re.search(r"(?m)^\S+: #\d+", out))
+
 
 def ks_table(name):
     return "swangui_ks_" + re.sub(r"[^A-Za-z0-9_]", "_", name)

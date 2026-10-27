@@ -1,5 +1,10 @@
 # Novedades
 
+## 1.0.6 — 2026-10-27
+
+- **Conexiones que se quedaban colgadas por la VPN**: el cifrado añade bytes a cada paquete y los más grandes ya no caben en el túnel; si la red bloquea el aviso que lo indica, una web o una copia de archivos se detiene a mitad. SwanGUI ahora ajusta el tamaño de los paquetes TCP (MSS 1360) solo para el tráfico que va por la VPN. Se puede desactivar por conexión en Editar → Avanzada → Configuración VPN.
+- **«Tráfico total» ya no vuelve a cero** cada vez que strongSwan renueva las claves del túnel (normalmente cada hora): SwanGUI suma los bytes de las claves anteriores mientras dure la conexión.
+
 ## 1.0.5 — 2026-10-27
 
 - Ventana principal más compacta (600 × 520): un solo botón Conectar/Desconectar, las acciones menos usadas en «Más ▾» y lista de conexiones más baja, con barra de desplazamiento si hay muchas.
