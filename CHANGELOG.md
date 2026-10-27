@@ -1,5 +1,18 @@
 # Novedades
 
+## 1.0.5 — 2026-10-27
+
+- Ventana principal más compacta (600 × 520): un solo botón Conectar/Desconectar, las acciones menos usadas en «Más ▾» y lista de conexiones más baja, con barra de desplazamiento si hay muchas.
+- Detalles más claros: DNS en formato corto (modo · servidor (dominios) ✓), «Inicio» en lugar de «Conectado desde», flechas de tráfico en color y más separación entre dato y valor.
+- Gráfica nueva:
+  - Selector de periodo: último minuto, 10 min, 30 min o última hora.
+  - Cuadrícula, eje de tiempo y dos ejes con título: «Tráfico» (B/s, KiB/s o MiB/s) a la izquierda y «Latencia (ms)» a la derecha.
+  - Leyenda centrada con los valores actuales y valores de cada momento al pasar el ratón.
+  - Una ráfaga antigua ya no aplasta la escala: se dibuja cortada con ▲ y su valor.
+  - Recibido en azul, enviado en naranja y latencia en gris discontinuo.
+- La gráfica de cada conexión guarda su sesión actual (como mucho la última hora) y la conserva al reiniciar SwanGUI; empieza de nuevo al desconectar o al reiniciar el equipo. SwanGUI también guarda los datos al cerrar sesión o apagar.
+- La latencia se mide contra el DNS de la VPN y, si un equipo no responde al ping, SwanGUI prueba el siguiente. Antes, con VPN cuyo primer equipo no responde, no había latencia ni «Calidad».
+
 ## 1.0.4 — 2026-10-26
 
 - Los errores de SwanGUI quedan ahora también en el registro del sistema, para poder diagnosticarlos después. Incluye el caso de una VPN que conecta pero cuyo DNS no se aplica, que antes solo se veía en la notificación. Para verlos: `journalctl -t swangui-helper -p warning`.

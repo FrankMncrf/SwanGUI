@@ -40,27 +40,27 @@ Descarga el paquete de tu distribución desde la [última versión](https://gith
 
 | Distribución | Paquete |
 |---|---|
-| Debian 12+ / Ubuntu 24.04+ | [swangui_1.0.4-1_all.deb](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.4/swangui_1.0.4-1_all.deb) |
-| Fedora | [swangui-1.0.4-1.fc44.noarch.rpm](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.4/swangui-1.0.4-1.fc44.noarch.rpm) |
-| Arch Linux, CachyOS, Manjaro, EndeavourOS | [swangui-1.0.4-1-any.pkg.tar.zst](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.4/swangui-1.0.4-1-any.pkg.tar.zst) · [PKGBUILD](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.4/PKGBUILD) |
-| Sumas de verificación | [SHA256SUMS](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.4/SHA256SUMS) |
+| Debian 12+ / Ubuntu 24.04+ | [swangui_1.0.5-1_all.deb](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.5/swangui_1.0.5-1_all.deb) |
+| Fedora | [swangui-1.0.5-1.fc44.noarch.rpm](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.5/swangui-1.0.5-1.fc44.noarch.rpm) |
+| Arch Linux, CachyOS, Manjaro, EndeavourOS | [swangui-1.0.5-1-any.pkg.tar.zst](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.5/swangui-1.0.5-1-any.pkg.tar.zst) · [PKGBUILD](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.5/PKGBUILD) |
+| Sumas de verificación | [SHA256SUMS](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.5/SHA256SUMS) |
 
 ### Debian / Ubuntu
 
 ```sh
-sudo apt install ./swangui_1.0.4-1_all.deb
+sudo apt install ./swangui_1.0.5-1_all.deb
 ```
 
 ### Fedora
 
 ```sh
-sudo dnf install ./swangui-1.0.4-1.fc44.noarch.rpm
+sudo dnf install ./swangui-1.0.5-1.fc44.noarch.rpm
 ```
 
 ### Arch Linux y derivadas
 
 ```sh
-sudo pacman -U swangui-1.0.4-1-any.pkg.tar.zst
+sudo pacman -U swangui-1.0.5-1-any.pkg.tar.zst
 ```
 
 O constrúyelo tú con el `PKGBUILD`: `makepkg -si`. Pronto también en AUR (`yay -S swangui`).

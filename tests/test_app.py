@@ -24,6 +24,7 @@ class AppStartTests(unittest.TestCase):
         os.environ["XDG_CONFIG_HOME"] = os.environ["XDG_DATA_HOME"] = tmp
         g.SETTINGS_PATH = os.path.join(tmp, "swangui", "settings.json")
         g.HISTORY_PATH = os.path.join(tmp, "swangui", "history.jsonl")
+        g.TRAFFIC_PATH = os.path.join(tmp, "swangui", "traffic.json")
         qapp = QApplication.instance() or QApplication([])
         g.Helper.run = lambda self, args, cb, stdin=None: cb(STATUS if args[0] == "status" else {"ok": True})
         app = g.SwanGUI(qapp)
@@ -54,10 +55,22 @@ class AppStartTests(unittest.TestCase):
         for part in ("10.9.0.2", "203.0.113.5", "1:02:05", "5.0 MiB", "10.0.0.53", "corp.example", "10.0.0.54",
                      "2:00:00", "0:10:00", g.tr("Buena"), g.COLORS["up"]):
             self.assertIn(part, text)
+        self.assertEqual(app.dns_summary("office"), g.tr("DNS local"))
+        app.settings.data["connections"]["office"] = {"dns_mode": "split", "dns_domains": ["corp.example"]}
+        self.assertEqual(app.dns_summary("office"), g.tr("Dividido") + " · 10.0.0.53 (corp.example) ✓")
+        app.settings.data["connections"]["office"] = {"dns_mode": "all"}
+        self.assertEqual(app.dns_summary("office"), g.tr("Todo por la VPN") + " · 10.0.0.53 ✓")
+        app.settings.data["connections"].pop("office")
         g.TrayPopup.spot = None
         self.assertNotEqual(app.tray.toolTip(), "")
         app.card.refresh(g.QRect(100, 0, 24, 24))
         self.assertTrue(app.card.isVisible())
+        self.assertEqual([g.nice_ceil(v) for v in (0.7, 1, 3, 7, 42, 99)], [1, 1, 5, 10, 50, 100])
+        w = app.window
+        w.graph.resize(300, 160)
+        w.graph.set_samples(list(app.samples["office"]))
+        w.graph.hover_x = 150
+        w.graph.grab()  # paints scales, legend and the hover box
         sec = app.card.sections["office"]
         self.assertEqual(sec.button.text(), g.tr("Desconectar"))
         self.assertFalse(sec.graph.isHidden())
@@ -79,6 +92,68 @@ class AppStartTests(unittest.TestCase):
         app.sleeping = False
         g.SwanGUI.poll(app)
         self.assertEqual(calls, ["resume", "status"])
+
+    def test_graph_span(self):
+        import time
+        from PyQt6.QtWidgets import QApplication
+        qapp = QApplication.instance() or QApplication([])  # noqa: F841 (must outlive the widget)
+        graph = g.TrafficGraph()
+        now = time.time()
+        graph.set_samples([(now - k * 4, 1000.0, 500.0, 20.0 if k % 3 else None) for k in range(900, 0, -1)])
+        for minutes, most in ((1, 16), (10, 151), (60, 151)):
+            graph.span = minutes * 60
+            shown = graph._visible()
+            self.assertLessEqual(len(shown), most, minutes)
+            self.assertGreater(len(shown), 10, minutes)
+            self.assertTrue(all(s[0] >= now - minutes * 60 for s in shown))
+            self.assertAlmostEqual(shown[-1][1], 1000.0)
+        graph.resize(300, 160)
+        graph.hover_x = 200
+        graph.grab()
+
+    def test_traffic_store(self):
+        import time
+        tmp = tempfile.mkdtemp()
+        g.TRAFFIC_PATH = os.path.join(tmp, "swangui", "traffic.json")
+        now = time.time()
+        g.TrafficStore.save({"office": [(now - 7200, 1, 1, 1), (now - 10, 2048.0, 512.0, None), (now, 4096.0, 1.0, 9.5)],
+                             "gone": [(now - 5000, 1, 1, 1)]})
+        self.assertEqual(stat.S_IMODE(os.stat(g.TRAFFIC_PATH).st_mode), 0o600)
+        self.assertEqual(g.TrafficStore.load(), {"office": [(now - 10, 2048.0, 512.0, None), (now, 4096.0, 1.0, 9.5)]})
+        g.TrafficStore.save({"office": [(g.boot_time() - 5, 1, 1, 1)]})  # before the last boot
+        self.assertEqual(g.TrafficStore.load(), {})
+        self.assertGreater(g.boot_time(), 0)
+        for junk in ('{"samples": {"x": [[1, "a"], "junk"]}}', "not json", "[1]"):
+            with open(g.TRAFFIC_PATH, "w") as f:
+                f.write(junk)
+            self.assertEqual(g.TrafficStore.load(), {})
+
+    def test_disconnect_clears_graph(self):
+        import time
+        app = g.SwanGUI.__new__(g.SwanGUI)
+        app.busy, app.errors, app.latency, app.last_bytes = {}, set(), {}, {}
+        app._ping = lambda name: None
+        app.samples = {"office": g.deque([(time.time(), 1, 1, 1)]), "lab": g.deque([(time.time(), 1, 1, 1)])}
+        app.status = {"sas": {"office": {"state": "ESTABLISHED", "child_up": True, "established": 10,
+                                         "bytes_in": 5, "bytes_out": 5}}}
+        app._sample_traffic()
+        self.assertIn("office", app.samples)   # still up: kept
+        self.assertNotIn("lab", app.samples)   # down: starts again next time
+
+    def test_latency_targets(self):
+        app = g.SwanGUI.__new__(g.SwanGUI)
+        app.settings = g.Settings.__new__(g.Settings)
+        app.settings.data = {"connections": {"office": {"dns_mode": "split"}}}
+        app.dns_info = {"office": {"servers": ["10.0.0.53"]}}
+        app.lat_pick = {}
+        app.status = {"dns": ["office"], "connections": [{"name": "office", "remote_ts": "10.0.0.0/8,192.168.5.0/24"}],
+                      "sas": {"office": {"remote_host": "203.0.113.5"}}}
+        self.assertEqual(app._latency_targets("office"), ["10.0.0.53", "10.0.0.1", "192.168.5.1", "203.0.113.5"])
+        self.assertEqual(app._latency_target("office"), "10.0.0.53")
+        app.lat_pick["office"] = 1   # the DNS stopped answering
+        self.assertEqual(app._latency_target("office"), "10.0.0.1")
+        app.settings.data["connections"]["office"]["latency_host"] = "10.1.1.1"
+        self.assertEqual(app._latency_targets("office"), ["10.1.1.1"])
 
     def test_quality(self):
         app = g.SwanGUI.__new__(g.SwanGUI)

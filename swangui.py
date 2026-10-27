@@ -5,6 +5,7 @@ import hashlib
 import html
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
@@ -23,7 +24,7 @@ from PyQt6.QtCore import (
     pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtGui import (
-    QAction, QColor, QCursor, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
+    QAction, QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
     QPixmap,
 )
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
@@ -2056,6 +2057,59 @@ class Keyring:
 
 XDG_DATA = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
 HISTORY_PATH = os.path.join(XDG_DATA, "swangui", "history.jsonl")
+TRAFFIC_PATH = os.path.join(XDG_DATA, "swangui", "traffic.json")
+
+
+def boot_time():
+    try:
+        with open("/proc/stat") as f:
+            return next(float(line.split()[1]) for line in f if line.startswith("btime "))
+    except (OSError, StopIteration, ValueError, IndexError):
+        return 0
+
+
+class TrafficStore:
+    """Graph samples of each connection's current session (at most the last hour).
+
+    Kept on disk so they survive a restart of SwanGUI while the tunnel stays up; a
+    disconnection or a reboot starts the graph again.
+    """
+
+    @staticmethod
+    def save(samples):
+        cutoff = time.time() - 3600
+        data = {n: [list(x) for x in q if x[0] >= cutoff] for n, q in samples.items()}
+        data = {"samples": {n: v for n, v in data.items() if v}}
+        os.makedirs(os.path.dirname(TRAFFIC_PATH), exist_ok=True)
+        tmp = TRAFFIC_PATH + ".tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+            json.dump(data, f, separators=(",", ":"))
+        os.replace(tmp, TRAFFIC_PATH)
+
+    @staticmethod
+    def load():
+        """{name: [(t, rx/s, tx/s, latency)]} of the last hour, none from before the last boot."""
+        try:
+            with open(TRAFFIC_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        cutoff, samples = max(time.time() - 3600, boot_time()), {}
+        raw = data.get("samples", {})
+        for name, rows in (raw.items() if isinstance(raw, dict) else ()):
+            good = []
+            for row in rows if isinstance(rows, list) else ():
+                try:
+                    t, rx, tx, lat = row
+                    good.append((float(t), float(rx), float(tx), None if lat is None else float(lat)))
+                except (TypeError, ValueError):
+                    continue
+            good = sorted(x for x in good if x[0] >= cutoff)
+            if good:
+                samples[str(name)] = good
+        return samples
 
 
 class History:
@@ -2143,63 +2197,242 @@ def xfce_remove_shortcut(seq):
 # traffic / latency graph
 # ---------------------------------------------------------------------------
 
+def nice_ceil(v, steps=(1, 2, 5, 10)):
+    """Smallest step × 10^k not below v (1/2/5 by default), for readable graph scales."""
+    k = 10 ** math.floor(math.log10(v)) if v > 0 else 1
+    return next(m * k for m in steps if m * k >= v)
+
+
+def rate_text(v):
+    return human_bytes(v).replace(".0 ", " ") + "/s"
+
+
 class TrafficGraph(QWidget):
     """Download/upload rate and latency over the last minutes."""
 
     def __init__(self, compact=False):
         super().__init__()
         self.samples = []  # (t, rx_bps, tx_bps, latency_ms or None)
-        self.compact = compact  # small version for the tray card: no caption
+        self.compact = compact  # small version for the tray card: no scales, caption or hover
+        self.span = None  # seconds shown, placed by time; None spreads the samples over the width
+        self.hover_x = None
         self.setMinimumHeight(44 if compact else 110)
+        self.setMouseTracking(not compact)
 
     def set_samples(self, samples):
         self.samples = samples
         self.update()
 
+    def _visible(self):
+        """Samples inside the span, averaged into ~150 buckets so long spans stay readable."""
+        if not self.span:
+            return self.samples
+        now = time.time()
+        shown = [s for s in self.samples if s[0] >= now - self.span]
+        if len(shown) <= 180:
+            return shown
+        width = self.span / 150
+        out, bucket = [], []
+        for s in shown + [None]:
+            if bucket and (s is None or s[0] - bucket[0][0] >= width):
+                lat = [b[3] for b in bucket if b[3] is not None]
+                out.append((bucket[-1][0], sum(b[1] for b in bucket) / len(bucket),
+                            sum(b[2] for b in bucket) / len(bucket), sum(lat) / len(lat) if lat else None))
+                bucket = []
+            if s is not None:
+                bucket.append(s)
+        return out
+
+    def mouseMoveEvent(self, ev):
+        self.hover_x = ev.position().x()
+        self.update()
+
+    def leaveEvent(self, _ev):
+        self.hover_x = None
+        self.update()
+
     def paintEvent(self, _ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = self.rect().adjusted(4, 4, -4, -4 if self.compact else -18)
         pal = self.palette()
+        muted = pal.placeholderText().color()
+        small = p.font()
+        small.setPointSizeF(small.pointSizeF() * 0.8)
+        fm = QFontMetrics(small)
+        r = self.rect().adjusted(4, 4, -4, -4) if self.compact else \
+            self.rect().adjusted(4 + fm.horizontalAdvance("8888") + 4, fm.height() + 16,
+                                 -4 - fm.horizontalAdvance("888") - 4,
+                                 -fm.height() * (2 if self.span else 1) - 14)
         p.fillRect(self.rect(), pal.base())
         p.setPen(QPen(pal.mid().color(), 1))
         p.drawRect(r)
+        full, self.samples = self.samples, self._visible()
+        try:
+            self._paint(p, pal, muted, small, fm, r)
+        finally:
+            self.samples = full
+            p.end()
+
+    def _paint(self, p, pal, muted, small, fm, r):
         if len(self.samples) < 2:
             p.setPen(pal.text().color())
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, tr("Sin datos todavía"))
             return
         n = len(self.samples)
-        peak = max(max(s[1], s[2]) for s in self.samples) or 1
-        lat_peak = max((s[3] or 0) for s in self.samples) or 1
+        now = time.time()
+        if self.span:
+            xs = [r.right() - r.width() * min(1, (now - s[0]) / self.span) for s in self.samples]
+        else:
+            xs = [r.left() + r.width() * i / (n - 1) for i in range(n)]
+        # no line across the time the tunnel was down
+        gap = max(3 * POLL_MS / 1000, (self.span or 0) / 150 * 2.5)
+        runs, start = [], 0
+        for i in range(1, n + 1):
+            if i == n or self.samples[i][0] - self.samples[i - 1][0] > gap:
+                runs.append(range(start, i))
+                start = i
+        # scale to the usual traffic plus the last minute: an old burst (e.g. at connect time)
+        # is drawn clipped with its value instead of flattening everything else
+        rates = sorted(max(s[1], s[2]) for s in self.samples)
+        recent = max(max(s[1], s[2]) for s in self.samples if s[0] >= self.samples[-1][0] - 60)
+        peak = max(rates[int(len(rates) * 0.9)] * 1.5, recent) * 1.1 or 1024
+        unit = 1024 ** min(4, int(math.log(max(peak, 1), 1024)))  # round in KiB/MiB, as the label shows
+        peak = nice_ceil(peak / unit / 4, (1, 1.5, 2, 2.5, 3, 5, 7.5, 10)) * 4 * unit
+        if peak / unit >= 1000:  # 1000 KiB/s reads better as 1 MiB/s
+            unit *= 1024
+        lat_peak = nice_ceil(max(max((s[3] or 0) for s in self.samples) * 1.25, 20) / 4,
+                             (1, 1.5, 2, 2.5, 3, 5, 7.5, 10)) * 4  # quarters with round values
 
-        def line(idx, color, scale, style=Qt.PenStyle.SolidLine):
-            pts = []
-            for i, s in enumerate(self.samples):
-                v = s[idx]
-                if v is None:
-                    continue
-                x = r.left() + r.width() * i / (n - 1)
-                y = r.bottom() - r.height() * (v / scale)
-                pts.append(QPointF(x, y))
-            if len(pts) > 1:
-                p.setPen(QPen(QColor(color), 2, style))
-                p.drawPolyline(pts)
+        def xy(i, v, scale):
+            return QPointF(xs[i], r.bottom() - r.height() * min(v / scale, 1))
 
-        line(1, RX_COLOR, peak)
-        line(2, TX_COLOR, peak)
-        line(3, LAT_COLOR, lat_peak, Qt.PenStyle.DashLine)
+        if not self.compact:
+            # square grid: quarters of the scale, columns of the same size counted back from now
+            grid = QColor(pal.text().color())  # mid() is nearly the base color in dark themes
+            grid.setAlpha(45)
+            p.setPen(QPen(grid, 1))
+            cell = r.height() / 4
+            for k in range(1, 4):
+                y = r.top() + cell * k
+                p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+            ticks = []
+            if self.span:  # time axis: grid lines at minor ticks, numbers on those that have room
+                def tick_label(ago):
+                    return f"−{ago:.0f}s" if ago < 60 else f"−{ago / 60:.0f}m"
+
+                steps = (5, 10, 15, 30, 60, 120, 300, 600, 900, 1200, 1800)
+                minor = next((st for st in steps if r.width() * st / self.span >= 12), self.span / 2)
+                major = next((st for st in steps if st % minor == 0 and r.width() * st / self.span
+                              >= fm.horizontalAdvance(tick_label(self.span - st)) + 8), self.span)
+                ticks = [(r.right() - r.width() * k * minor / self.span, k * minor if (k * minor) % major == 0 else None)
+                         for k in range(1, int(self.span // minor) + 1)]
+                ticks = [(x, ago) for x, ago in ticks if x > r.left() + 2]
+            else:
+                x = r.right() - cell
+                while x > r.left() + 2:
+                    ticks.append((x, None))
+                    x -= cell
+            for x, _ in ticks:
+                p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+            p.setFont(small)
+            p.setPen(muted)
+            if self.span:
+                y = r.bottom() + fm.ascent() + 3
+                now_label = tr("ahora")
+                p.drawText(QPointF(r.right() - fm.horizontalAdvance(now_label), y), now_label)
+                for x, ago in ticks:
+                    if ago is None:
+                        continue
+                    label = tick_label(ago)
+                    lx = x - fm.horizontalAdvance(label) / 2
+                    if lx + fm.horizontalAdvance(label) < r.right() - fm.horizontalAdvance(now_label) - 6:
+                        p.drawText(QPointF(lx, y), label)
+            # top of the scale above the frame; the other lines' values in a gutter on the left
+            # axis titles with their units; the numbers of each axis say what every line is worth
+            p.drawText(QPointF(4, r.top() - 10), tr("Tráfico ({0})").format(rate_text(unit).split()[-1]))
+            for k in range(5):
+                v = f"{peak * (4 - k) / 4 / unit:.4g}"
+                y = r.top() + cell * k + fm.ascent() / 2 - 1
+                p.drawText(QPointF(r.left() - 4 - fm.horizontalAdvance(v), y), v)
+            # latency has its own axis: its values in a gutter on the right, in its color
+            p.setPen(QColor(LAT_COLOR))
+            for k in range(5):
+                y = r.top() + cell * k + fm.ascent() / 2 - 1
+                p.drawText(QPointF(r.right() + 4, y), f"{lat_peak * (4 - k) / 4:.0f}")
+            lat_label = tr("Latencia (ms)")
+            p.drawText(QPointF(self.width() - 4 - fm.horizontalAdvance(lat_label), r.top() - 10), lat_label)
+
+        for idx, color in ((1, RX_COLOR), (2, TX_COLOR)):
+            for run in runs:
+                pts = [xy(i, self.samples[i][idx], peak) for i in run]
+                area = QPainterPath(QPointF(pts[0].x(), r.bottom()))
+                for pt_ in pts:
+                    area.lineTo(pt_)
+                area.lineTo(pts[-1].x(), r.bottom())
+                fill = QColor(color)
+                fill.setAlpha(40)
+                p.fillPath(area, fill)
+                p.setPen(QPen(QColor(color), 2))
+                p.drawPolyline(pts) if len(pts) > 1 else p.drawPoint(pts[0])
+        top = max(range(n), key=lambda i: max(self.samples[i][1], self.samples[i][2]))
+        top_v = max(self.samples[top][1], self.samples[top][2])
+        if top_v > peak and not self.compact:
+            p.setFont(small)
+            p.setPen(pal.text().color())
+            label = "▲ " + rate_text(top_v)
+            x = min(max(xy(top, 0, 1).x() + 4, r.left() + 2), r.right() - fm.horizontalAdvance(label) - 2)
+            p.drawText(QPointF(x, r.top() + fm.ascent() + 2), label)
+        p.setPen(QPen(QColor(LAT_COLOR), 1.5, Qt.PenStyle.DashLine))
+        for run in runs:
+            lat_pts = [xy(i, self.samples[i][3], lat_peak) for i in run if self.samples[i][3] is not None]
+            if len(lat_pts) > 1:
+                p.drawPolyline(lat_pts)
         if self.compact:
-            p.end()
             return
+
+        # caption: colored legend with the latest values
         last = self.samples[-1]
-        p.setPen(pal.text().color())
-        f = p.font()
-        f.setPointSizeF(f.pointSizeF() * 0.85)
-        p.setFont(f)
         lat = f"{last[3]:.0f} ms" if last[3] is not None else "—"
-        p.drawText(4, self.height() - 4,
-                   tr("↓ {0}/s   ↑ {1}/s   latencia {2}   (máx. {3}/s · {4:.0f} ms)").format(human_bytes(last[1]), human_bytes(last[2]), lat, human_bytes(peak), lat_peak))
-        p.end()
+        items = [(RX_COLOR, f"↓ {human_bytes(last[1])}/s"), (TX_COLOR, f"↑ {human_bytes(last[2])}/s"),
+                 (LAT_COLOR, f"~ {lat}")]  # "~", not a dash, which would read as a negative latency
+        gap = fm.horizontalAdvance("   ")
+        while len(items) > 1 and sum(fm.horizontalAdvance(t) for _, t in items) + gap * (len(items) - 1) > self.width() - 8:
+            items.pop()
+        x = (self.width() - sum(fm.horizontalAdvance(t) for _, t in items) - gap * (len(items) - 1)) / 2
+        y = self.height() - 5
+        for color, text in items:
+            p.setPen(QColor(color))
+            p.drawText(QPointF(x, y), text)
+            x += fm.horizontalAdvance(text) + gap
+
+        # hover: values at the pointed moment
+        if self.hover_x is not None and max(r.left(), xs[0] - 6) <= self.hover_x <= r.right():
+            i = min(range(n), key=lambda k: abs(xs[k] - self.hover_x))
+            s = self.samples[i]
+            x = xy(i, 0, 1).x()
+            p.setPen(QPen(pal.text().color(), 1, Qt.PenStyle.DotLine))
+            p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+            for idx, color, scale in ((1, RX_COLOR, peak), (2, TX_COLOR, peak), (3, LAT_COLOR, lat_peak)):
+                if s[idx] is not None:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(color))
+                    p.drawEllipse(xy(i, s[idx], scale), 3.5, 3.5)
+            lines = [tr("hace {0}").format(human_time(max(0, time.time() - s[0]))),
+                     f"↓ {human_bytes(s[1])}/s", f"↑ {human_bytes(s[2])}/s",
+                     tr("latencia {0}").format(f"{s[3]:.0f} ms" if s[3] is not None else "—")]
+            bw = max(fm.horizontalAdvance(t) for t in lines) + 12
+            bh = fm.height() * len(lines) + 8
+            bx = x + 8 if x + 8 + bw <= r.right() else x - 8 - bw
+            box = QRect(int(bx), r.top() + 4, bw, bh)
+            bg = pal.window().color()
+            bg.setAlpha(230)
+            p.setPen(QPen(pal.mid().color(), 1))
+            p.setBrush(bg)
+            p.drawRoundedRect(box, 4, 4)
+            for k, (t, color) in enumerate(zip(lines, (pal.text().color(), QColor(RX_COLOR), QColor(TX_COLOR),
+                                                       pal.text().color()))):
+                p.setPen(color)
+                p.drawText(box.left() + 6, box.top() + 4 + fm.ascent() + k * fm.height(), t)
 
 
 # ---------------------------------------------------------------------------
@@ -2656,7 +2889,7 @@ class EditorDialog(QDialog):
         # --- monitoring
         mon = Section(tr("Supervisión"))
         self.latency_host = QLineEdit()
-        self.latency_host.setPlaceholderText(tr("automático (primer equipo de la red remota)"))
+        self.latency_host.setPlaceholderText(tr("automático (DNS de la VPN o el primer equipo que responda)"))
         mon.form.addRow(tr("Medir latencia contra:"), self.latency_host)
 
         adv = QWidget()
@@ -3389,7 +3622,7 @@ class LogWindow(QDialog):
 # help menu: about, project links, bug reports, donations, updates
 # ---------------------------------------------------------------------------
 
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 REPO_URL = "https://github.com/FrankMncrf/SwanGUI"
 RELEASES_API = "https://api.github.com/repos/FrankMncrf/SwanGUI/releases/latest"
 # donation targets; an empty value hides that option
@@ -3640,7 +3873,7 @@ class CardSection(QWidget):
         busy = self.app.busy.get(self.name)
         self.button.setText(tr("Desconectar") if state in ("up", "connecting") else tr("Conectar"))
         self.button.setEnabled(busy is None)
-        samples = list(self.app.samples.get(self.name, []))
+        samples = list(self.app.samples.get(self.name, []))[-90:]
         self.graph.setVisible(state == "up" and len(samples) > 1)
         self.graph.set_samples(samples)
 
@@ -3967,7 +4200,6 @@ class MainWindow(QMainWindow):
         self.app = app
         self.setWindowTitle(APP)
         self.setWindowIcon(shield_icon("up"))
-        self.resize(900, 620)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels([tr("Conexión"), tr("Estado"), tr("Gateway"), tr("IP virtual"), tr("Tiempo"),
@@ -4017,38 +4249,70 @@ class MainWindow(QMainWindow):
             action.changed.connect(lambda: b.setEnabled(action.isEnabled()))
             return b
 
+        # one button that connects or disconnects the selected tunnel keeps the window narrow
+        self.toggle_btn = QPushButton(tr("Conectar"))
+        self.toggle_btn.clicked.connect(self.toggle_selected)
+        fm = self.toggle_btn.fontMetrics()
+        self.toggle_btn.setMinimumWidth(max(fm.horizontalAdvance(t) for t in (tr("Conectar"), tr("Desconectar"))) + 32)
+        more = QPushButton(tr("Más"))
+        more_menu = QMenu(more)
+        for a in (self.a_import, self.a_export, None, self.a_dup, self.a_raw, None, self.a_log):
+            more_menu.addSeparator() if a is None else more_menu.addAction(a)
+        more.setMenu(more_menu)
         row = QHBoxLayout()
-        for a in (self.a_connect, self.a_disconnect):
-            row.addWidget(btn(a))
+        row.addWidget(self.toggle_btn)
         row.addSpacing(12)
         for a in (self.a_new, self.a_edit, self.a_delete):
             row.addWidget(btn(a))
         row.addSpacing(12)
         row.addWidget(btn(self.a_diag, tr("Probar")))
-        for a in (self.a_import, self.a_export):
-            row.addWidget(btn(a))
         row.addStretch()
-        row.addWidget(btn(self.a_log))
+        row.addWidget(more)
 
         # --- details panel
         self.d = {}
         form = QFormLayout()
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(6)
         for key, label in (("state", tr("Estado")), ("vip", tr("IP virtual")), ("server", tr("Servidor")),
-                           ("since", tr("Conectado desde")), ("total", tr("Tráfico total")),
+                           ("since", tr("Inicio")), ("total", tr("Tráfico total")),
                            ("dns", "DNS"), ("ks", "Kill switch"), ("cert", tr("Certificado"))):
             self.d[key] = QLabel("—")
             self.d[key].setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             form.addRow(f"{label}:", self.d[key])
         self.graph = TrafficGraph()
+        self.graph.setMinimumWidth(180)
+        self.graph.setFixedHeight(162)
+        self.span = QComboBox()
+        for minutes, label in ((1, tr("Último minuto")), (10, tr("Últimos 10 min")), (30, tr("Últimos 30 min")),
+                               (60, tr("Última hora"))):
+            self.span.addItem(label, minutes)
+        set_combo(self.span, self.app.settings.data.get("graph_minutes", 10))
+        self.graph.span = self.span.currentData() * 60
+        self.span.currentIndexChanged.connect(self._span_changed)
+        graph_box = QVBoxLayout()
+        graph_box.setSpacing(6)
+        span_row = QHBoxLayout()
+        span_row.addStretch()
+        span_row.addWidget(self.span)
+        graph_box.addStretch()
+        graph_box.addLayout(span_row)
+        graph_box.addWidget(self.graph)
+        graph_box.addStretch()
         details = QGroupBox(tr("Detalles"))
         dl = QHBoxLayout(details)
-        dl.addLayout(form, 2)
-        dl.addWidget(self.graph, 3)
+        dl.setSpacing(24)  # the graph takes the room the data leaves, with some air between them
+        dl.addLayout(form, 0)
+        dl.addLayout(graph_box, 1)
 
+        # room for about three connections; more scroll
+        rows = self.tree.fontMetrics().height() + 8
+        self.tree.setMinimumHeight(rows * 2 + 24)
         split = QSplitter(Qt.Orientation.Vertical)
         split.addWidget(self.tree)
         split.addWidget(details)
-        split.setSizes([260, 200])
+        split.setStretchFactor(1, 1)
+        split.setSizes([rows * 3 + 30, 260])
         conns = QWidget()
         cl = QVBoxLayout(conns)
         cl.addWidget(split)
@@ -4091,6 +4355,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.status)
         self.setCentralWidget(central)
         self.update_actions()
+        self.resize(max(600, self.minimumSizeHint().width()), 520)
 
     def _action(self, text, slot, shortcut=None):
         a = QAction(text, self)
@@ -4126,10 +4391,18 @@ class MainWindow(QMainWindow):
         st = self.app.state_of(name) if name else None
         self.a_connect.setEnabled(bool(name) and st in ("down", "error"))
         self.a_disconnect.setEnabled(bool(name) and st in ("up", "connecting"))
+        self.toggle_btn.setText(tr("Desconectar") if st in ("up", "connecting") else tr("Conectar"))
+        self.toggle_btn.setEnabled(bool(name) and self.app.busy.get(name) is None)
         for a in (self.a_edit, self.a_dup, self.a_raw, self.a_delete, self.a_diag):
             a.setEnabled(bool(name))
         self.a_export.setEnabled(bool(self.app.status.get("connections")))
         self.a_ks_off.setEnabled(bool(self.app.status.get("killswitch")))
+
+    def _span_changed(self):
+        self.graph.span = self.span.currentData() * 60
+        self.graph.update()
+        self.app.settings.data["graph_minutes"] = self.span.currentData()
+        self.app.settings.save()
 
     def update_details(self):
         name = self.selected()
@@ -4148,13 +4421,10 @@ class MainWindow(QMainWindow):
                                  else info.get("remote", ""))
         self.d["since"].setText(time.strftime("%d/%m %H:%M:%S", time.localtime(time.time() - sa["established"]))
                                 + f"  ({human_time(sa['established'])})" if st == "up" else "—")
-        self.d["total"].setText(f"↓ {human_bytes(sa['bytes_in'])}   ↑ {human_bytes(sa['bytes_out'])}"
+        self.d["total"].setText(f"<span style='color:{RX_COLOR}'><b>↓</b></span> {human_bytes(sa['bytes_in'])}&nbsp;&nbsp;&nbsp;"
+                                f"<span style='color:{TX_COLOR}'><b>↑</b></span> {human_bytes(sa['bytes_out'])}"
                                 if st == "up" else "—")
-        mode = dict(DNS_MODES).get(meta.get("dns_mode", "none"))
-        active = name in self.app.status.get("dns", [])
-        doms = ", ".join(meta.get("dns_domains", []))
-        self.d["dns"].setText(f"{mode}{' — ' + doms if doms and meta.get('dns_mode') == 'split' else ''}"
-                              f"{'  ✓ aplicado' if active else ''}")
+        self.d["dns"].setText(self.app.dns_summary(name))
         ks = name in self.app.status.get("killswitch", [])
         self.d["ks"].setText((tr("ACTIVO — bloqueando tráfico") if ks and st != "up" else "activo")
                              if ks else (tr("configurado (se activa al conectar)") if meta.get("killswitch") else "no"))
@@ -4274,7 +4544,7 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 
 RETRY_DELAYS = [10, 20, 40, 60, 120, 300]
-GRAPH_POINTS = 90
+GRAPH_POINTS = 3600 * 1000 // POLL_MS  # one hour of samples
 
 
 class SwanGUI(QObject):
@@ -4300,9 +4570,12 @@ class SwanGUI(QObject):
         self.resume_deadline = 0
         self.connectivity = "unknown"
         self.portal_warned = False
-        self.samples = {}          # name -> deque of (t, rx/s, tx/s, latency)
+        self.samples = {n: deque(rows, maxlen=GRAPH_POINTS) for n, rows in TrafficStore.load().items()}
+        # name -> deque of (t, rx/s, tx/s, latency), the last hour also on disk
         self.last_bytes = {}       # name -> (t, bytes_in, bytes_out)
         self.latency = {}          # name -> ms
+        self.lat_pick = {}         # name -> index of the latency target in use
+        self.lat_fail = {}         # name -> pings in a row without answer
         self.last_sa = {}          # name -> last seen SA (for history)
         self.certs = []
         self.trusted_now = False
@@ -4331,6 +4604,10 @@ class SwanGUI(QObject):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll)
         self.timer.start(POLL_MS)
+        self.save_timer = QTimer(self)
+        self.save_timer.timeout.connect(self._save_traffic)
+        self.save_timer.start(60 * 1000)
+        self.qapp.aboutToQuit.connect(self._save_traffic)
         self.cert_timer = QTimer(self)
         self.cert_timer.timeout.connect(self.check_certs)
         self.cert_timer.start(3600 * 1000)
@@ -4432,21 +4709,38 @@ class SwanGUI(QObject):
             if self.state_of(name) != "up":
                 self.last_bytes.pop(name, None)
                 self.latency.pop(name, None)
+        for name in list(self.samples):
+            if self.state_of(name) in ("down", "error"):  # disconnected: the next session starts a new graph
+                self.samples.pop(name)
 
-    def _latency_target(self, name):
+    def _save_traffic(self):
+        try:
+            TrafficStore.save(self.samples)
+        except OSError as e:
+            self.log.append(tr("No se pudo guardar la gráfica"), str(e))
+
+    def _latency_targets(self, name):
+        """Hosts to measure latency against, best first; a host set by the user is the only one."""
         meta = self.settings.conn(name)
         if meta.get("latency_host"):
-            return meta["latency_host"]
-        if meta.get("dns_servers"):
-            return meta["dns_servers"][0]
+            return [meta["latency_host"]]
+        # the VPN's DNS is a host that is known to exist and almost always answers
+        out = list(meta.get("dns_servers", []))
+        if name in self.status.get("dns", []):
+            out += (self.dns_info.get(name) or self._query_dns(name)).get("servers", [])
         for t in self.conn_info(name).get("remote_ts", "").split(","):
             try:
                 net = ipaddress.ip_network(t.strip(), strict=False)
             except ValueError:
                 continue
-            if net.prefixlen and net.version == 4:
-                return str(next(net.hosts()))
-        return self.status.get("sas", {}).get(name, {}).get("remote_host", "")
+            if net.prefixlen and net.version == 4 and net.num_addresses > 2:
+                out.append(str(next(net.hosts())))
+        out.append(self.status.get("sas", {}).get(name, {}).get("remote_host", ""))
+        return [h for i, h in enumerate(out) if h and h not in out[:i]]
+
+    def _latency_target(self, name):
+        targets = self._latency_targets(name)
+        return targets[self.lat_pick.get(name, 0) % len(targets)] if targets else ""
 
     def _ping(self, name):
         target = self._latency_target(name)
@@ -4458,6 +4752,11 @@ class SwanGUI(QObject):
             out = bytes(proc.readAllStandardOutput()).decode(errors="replace")
             m = re.search(r"time=([\d.]+)", out)
             self.latency[name] = float(m.group(1)) if m else None
+            # a host that doesn't answer ping (3 times in a row): try the next candidate
+            self.lat_fail[name] = 0 if m else self.lat_fail.get(name, 0) + 1
+            if self.lat_fail[name] >= 3:
+                self.lat_fail[name] = 0
+                self.lat_pick[name] = self.lat_pick.get(name, 0) + 1
             proc.deleteLater()
 
         proc.finished.connect(done)
@@ -4891,6 +5190,22 @@ class SwanGUI(QObject):
         if loss:
             text += " · " + tr("{0:.0f}% sin respuesta").format(loss * 100)
         return color, text
+
+    def dns_summary(self, name):
+        """Short DNS line for the details panel: mode · servers in use (domains) ✓."""
+        mode = self.settings.conn(name).get("dns_mode", "none")
+        if mode == "none":
+            return tr("DNS local")
+        text = tr("Dividido") if mode == "split" else tr("Todo por la VPN")
+        doms = self.settings.conn(name).get("dns_domains", [])
+        if name in self.status.get("dns", []):
+            info = self.dns_info.get(name) or self._query_dns(name)
+            if info.get("servers"):
+                text += " · " + ", ".join(info["servers"])
+            doms = [d.lstrip("~") for d in info.get("domains", []) if d != "~."] or doms
+        if mode == "split" and doms:
+            text += f" ({', '.join(doms)})"
+        return text + (" ✓" if name in self.status.get("dns", []) else "")
 
     def _query_dns(self, name):
         """DNS applied before SwanGUI started: ask systemd-resolved (no privileges needed)."""
@@ -5498,7 +5813,7 @@ def cli(args):
 def main():
     # settings, history and exports describe the user's VPNs: keep them private
     os.umask(0o077)
-    for path in (SETTINGS_PATH, HISTORY_PATH):
+    for path in (SETTINGS_PATH, HISTORY_PATH, TRAFFIC_PATH):
         for target in (os.path.dirname(path), path):
             try:
                 os.chmod(target, 0o700 if target != path else 0o600)
@@ -5538,6 +5853,13 @@ def main():
             break
         time.sleep(0.5)  # the panel may still be starting at login
     app = SwanGUI(qapp)
+    # logout and shutdown send SIGTERM: quit through Qt so the graph data gets saved
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: qapp.quit())
+    signal.signal(signal.SIGINT, lambda *_: qapp.quit())
+    wake = QTimer()
+    wake.timeout.connect(lambda: None)  # lets Python run signal handlers while Qt waits
+    wake.start(500)
 
     def incoming():
         conn = server.nextPendingConnection()

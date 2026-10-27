@@ -1,5 +1,5 @@
 Name:           swangui
-Version:        1.0.4
+Version:        1.0.5
 Release:        1%{?dist}
 Summary:        FortiClient-style IPsec VPN client for strongSwan
 License:        GPL-3.0-or-later
@@ -46,6 +46,11 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix} LIBDIR=%{_prefix}/lib/swangu
 %{_licensedir}/%{name}/
 
 %changelog
+* Tue Oct 27 2026 Frank <frank@swangui.invalid> - 1.0.5-1
+- Narrower main window, traffic graph with time ranges, axes and grid
+- Graph data of the current session survives restarts (last hour only)
+- Latency measured against the VPN DNS when the first remote host does not answer ping
+
 * Mon Oct 26 2026 Frank <frank@swangui.invalid> - 1.0.4-1
 - Helper errors, including DNS failures while connecting, go to the system journal
 
