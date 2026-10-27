@@ -1,5 +1,11 @@
 # Novedades
 
+## 1.0.8 — 2026-10-27
+
+- **systemd-resolved solo con tu permiso**: el paquete de Debian ya no lo instala por su cuenta, porque pasa a gestionar el DNS del sistema. La primera vez que una conexión usa el DNS de la VPN, SwanGUI pregunta si instalarlo y activarlo (pide la contraseña de administrador). Funciona igual en Debian, Ubuntu, Fedora y Arch, donde viene instalado pero desactivado.
+- Al activarlo, NetworkManager pasa a usarlo, `/etc/resolv.conf` se guarda como `/etc/resolv.conf.swangui-backup` y los servidores DNS anteriores quedan como reserva de systemd-resolved, para que el equipo nunca se quede sin DNS (por ejemplo, con la red configurada en `/etc/network/interfaces`).
+- Si respondes «Ahora no», la VPN conecta igual, pero sin el DNS de la VPN: los nombres internos no se resuelven. No vuelve a preguntar para esa conexión; guardarla en Editar lo pregunta de nuevo. En Detalles se indica «DNS local (falta systemd-resolved)».
+
 ## 1.0.7 — 2026-10-27
 
 - Los paquetes instalan **todas** las dependencias, sin opcionales: python-cryptography (exportaciones cifradas), libsecret (llavero), NetworkManager (redes de confianza y portales cautivos) y systemd-resolved (DNS de la VPN); en Arch también polkit-gnome (agente de autenticación).

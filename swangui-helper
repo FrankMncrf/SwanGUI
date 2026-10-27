@@ -910,6 +910,114 @@ def dns_apply(name, cfg, initiate_log=""):
     return {"servers": servers, "dead": dead, "domains": routing, "interface": ifn}
 
 
+SYS_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+STUB = "/run/systemd/resolve/stub-resolv.conf"
+NM_RESOLVED_CONF = "/etc/NetworkManager/conf.d/90-swangui-resolved.conf"
+RESOLVED_FALLBACK_CONF = "/etc/systemd/resolved.conf.d/90-swangui-fallback.conf"
+
+
+def _public_dir(path):
+    """Create a system config directory readable by services (the helper's umask is 077)."""
+    if not os.path.isdir(path):
+        os.makedirs(path)
+        os.chmod(path, 0o755)
+
+
+def resolv_conf_servers(path="/etc/resolv.conf"):
+    """Name servers of a resolv.conf, except resolved's own stub."""
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if parts[:1] == ["nameserver"] and len(parts) > 1:
+                    try:
+                        ip = ipaddress.ip_address(parts[1].split("%")[0])
+                    except ValueError:
+                        continue
+                    if not ip.is_loopback and parts[1] not in out:
+                        out.append(parts[1])  # keeps a link-local's %interface
+    except OSError:
+        pass
+    return out
+
+
+def _active(unit):
+    p = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, timeout=10)
+    return p.stdout.strip() == "active"
+
+
+def resolv_conf_uses_resolved(path="/etc/resolv.conf"):
+    if os.path.realpath(path).startswith("/run/systemd/resolve/"):
+        return True
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return any(line.split()[:2] == ["nameserver", "127.0.0.53"] for line in f)
+    except OSError:
+        return False
+
+
+def resolved_ready():
+    return bool(shutil.which("resolvectl", path=SYS_PATH)) and _active("systemd-resolved") \
+        and resolv_conf_uses_resolved()
+
+
+def cmd_dns_setup():
+    """Install and enable systemd-resolved, which the VPN DNS needs (asked to the user first)."""
+    done = []
+    if not shutil.which("resolvectl", path=SYS_PATH):
+        for tool, cmd in (("apt-get", ["apt-get", "install", "-y", "systemd-resolved"]),
+                          ("dnf", ["dnf", "install", "-y", "systemd-resolved"]),
+                          ("zypper", ["zypper", "--non-interactive", "install", "systemd-resolved"]),
+                          ("pacman", ["pacman", "-S", "--needed", "--noconfirm", "systemd"])):
+            if shutil.which(tool, path=SYS_PATH):
+                p = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
+                                   env={"PATH": SYS_PATH, "DEBIAN_FRONTEND": "noninteractive", "LANG": "C"})
+                if p.returncode != 0:
+                    raise HelperError(tr("No se pudo instalar systemd-resolved:\n") + (p.stderr or p.stdout).strip()[-800:])
+                done.append("install")
+                break
+        else:
+            raise HelperError(tr("No se encontró un gestor de paquetes para instalar systemd-resolved"))
+    _run("systemctl", "enable", "--now", "systemd-resolved")
+    done.append("enable")
+    if not resolv_conf_uses_resolved():
+        # keep the DNS that works today as resolved's fallback: if nothing (NetworkManager,
+        # networkd) hands it servers, e.g. with ifupdown, the system must not lose DNS
+        old = resolv_conf_servers()
+        if old:
+            _public_dir(os.path.dirname(RESOLVED_FALLBACK_CONF))
+            with open(RESOLVED_FALLBACK_CONF, "w", encoding="utf-8") as f:
+                f.write("# SwanGUI: the DNS servers this system used before systemd-resolved\n"
+                        f"[Resolve]\nFallbackDNS={' '.join(old)}\n")
+            os.chmod(RESOLVED_FALLBACK_CONF, 0o644)
+            _run("systemctl", "restart", "systemd-resolved")
+            done.append("fallback")
+        nm = _active("NetworkManager")
+        if nm:  # NetworkManager hands its DNS to resolved instead of writing resolv.conf
+            _public_dir(os.path.dirname(NM_RESOLVED_CONF))
+            with open(NM_RESOLVED_CONF, "w", encoding="utf-8") as f:
+                f.write("# SwanGUI: the VPN DNS (split DNS) needs systemd-resolved\n[main]\ndns=systemd-resolved\n")
+            os.chmod(NM_RESOLVED_CONF, 0o644)
+        backup = "/etc/resolv.conf.swangui-backup"
+        if os.path.isfile("/etc/resolv.conf") and not os.path.islink("/etc/resolv.conf") and not os.path.exists(backup):
+            shutil.copy2("/etc/resolv.conf", backup)
+        tmp = "/etc/.resolv.conf.swangui"
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+        os.symlink(STUB, tmp)
+        try:
+            os.replace(tmp, "/etc/resolv.conf")
+        except OSError:  # bind-mounted (containers, WSL): point it at resolved in place
+            os.unlink(tmp)
+            with open("/etc/resolv.conf", "w", encoding="utf-8") as f:
+                f.write("# SwanGUI: DNS queries go to systemd-resolved\nnameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n")
+        done.append("resolv.conf")
+        if nm:
+            _run("systemctl", "restart", "NetworkManager")
+    return {"ok": True, "done": done, "ready": resolved_ready()}
+
+
 def dns_clear(name):
     ifn = dns_ifname(name)
     if os.path.exists(f"/sys/class/net/{ifn}"):
@@ -1402,6 +1510,8 @@ def main():
         return cmd_import(sys.stdin.read())
     if cmd == "reload":
         return {"ok": True, "load": reload_all()}
+    if cmd == "dns-setup" and not rest:
+        return cmd_dns_setup()
     raise HelperError(tr("Comando desconocido: {0}").format(' '.join(args)))
 
 

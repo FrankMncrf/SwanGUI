@@ -19,7 +19,7 @@ if [ "$1" != "--no-deps" ]; then
         missing=$(pacman -T $deps || true)
         [ -z "$missing" ] || sudo pacman -S --needed --noconfirm $missing
     elif command -v apt-get >/dev/null; then
-        deps="python3 python3-pyqt6 strongswan-swanctl charon-systemd polkitd nftables iproute2 openssl iputils-ping systemd-resolved python3-cryptography libsecret-tools network-manager"
+        deps="python3 python3-pyqt6 strongswan-swanctl charon-systemd polkitd nftables iproute2 openssl iputils-ping python3-cryptography libsecret-tools network-manager"
         missing=$(for d in $deps; do dpkg -s "$d" >/dev/null 2>&1 || echo "$d"; done)
         [ -z "$missing" ] || { sudo apt-get update && sudo apt-get install -y $missing; }
     elif command -v dnf >/dev/null; then

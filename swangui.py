@@ -2068,6 +2068,25 @@ def boot_time():
         return 0
 
 
+def resolved_ready():
+    """systemd-resolved is running and /etc/resolv.conf sends queries to it: the VPN DNS can work."""
+    if not shutil.which("resolvectl"):
+        return False
+    try:
+        p = subprocess.run(["systemctl", "is-active", "systemd-resolved"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if p.stdout.strip() != "active":
+        return False
+    if os.path.realpath("/etc/resolv.conf").startswith("/run/systemd/resolve/"):
+        return True
+    try:
+        with open("/etc/resolv.conf", encoding="utf-8", errors="replace") as f:
+            return any(line.split()[:2] == ["nameserver", "127.0.0.53"] for line in f)
+    except OSError:
+        return False
+
+
 class TrafficStore:
     """Graph samples of each connection's current session (at most the last hour).
 
@@ -3628,7 +3647,7 @@ class LogWindow(QDialog):
 # help menu: about, project links, bug reports, donations, updates
 # ---------------------------------------------------------------------------
 
-VERSION = "1.0.7"
+VERSION = "1.0.8"
 REPO_URL = "https://github.com/FrankMncrf/SwanGUI"
 RELEASES_API = "https://api.github.com/repos/FrankMncrf/SwanGUI/releases/latest"
 # donation targets; an empty value hides that option
@@ -4570,7 +4589,8 @@ class SwanGUI(QObject):
         self.dns_pending = set()
         self.dns_retry = {}        # name -> earliest time to retry a failed DNS apply
         self.dns_warned = set()    # DNS problem already notified during this session of the tunnel
-        self.dns_info = {}         # name -> {"servers": [...], "domains": [...]} as applied
+        self.dns_info = {}
+        self._resolved = (-1e9, False)  # (when, resolved_ready()) cache         # name -> {"servers": [...], "domains": [...]} as applied
         self.clock = None          # (wall, monotonic) at the last poll, to detect suspend/resume
         self.resume_queue = set()
         self.resume_deadline = 0
@@ -5010,7 +5030,7 @@ class SwanGUI(QObject):
                 self.dns_retry.pop(name, None)
                 self.dns_warned.discard(name)
                 self.dns_info.pop(name, None)
-            if st == "up" and mode != "none" and name not in active:
+            if st == "up" and mode != "none" and name not in active and self.resolved_ok():
                 if time.time() >= self.dns_retry.get(name, 0):
                     self._dns_call(name, ["dns-apply", name], self._dns_cfg(name))
             elif st in ("down", "error") and name in active:
@@ -5027,6 +5047,48 @@ class SwanGUI(QObject):
                 self._dns_applied(name, data["dns"])
 
         self.helper.run(args, done, stdin=json.dumps(cfg) if cfg else None)
+
+    def resolved_ok(self):
+        """resolved_ready(), cached for a while: it runs systemctl."""
+        now = time.monotonic()
+        if now - self._resolved[0] > 30:
+            self._resolved = (now, resolved_ready())
+        return self._resolved[1]
+
+    def _offer_resolved(self, name, then=None):
+        """The VPN DNS needs systemd-resolved: ask before installing it, since it takes over the system DNS."""
+        box = QMessageBox(self.window if self.window.isVisible() else None)
+        box.setWindowTitle(APP)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(tr("<b>{0}</b> usa el DNS de la VPN (nombres como servidor.empresa.local), y para eso hace falta systemd-resolved.").format(html.escape(name)))
+        box.setInformativeText(tr("systemd-resolved pasará a gestionar el DNS de tu equipo; NetworkManager lo usará automáticamente. Se pedirá la contraseña de administrador.\n\n¿Instalarlo y activarlo ahora?"))
+        yes = box.addButton(tr("Instalar y activar"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(tr("Ahora no"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        meta = dict(self.settings.conn(name))
+        if box.clickedButton() is not yes:
+            # don't ask again for this connection; saving it in Editar asks again
+            meta["dns_declined"] = True
+            self.settings.set_conn(name, meta)
+            if then:
+                then()  # connects and says it goes without the VPN DNS
+            else:
+                self._notify(tr("{0}: sin el DNS de la VPN. La conexión funciona, pero los nombres internos no se resolverán; usa IPs o actívalo en Editar.").format(name), "connecting", 10000)
+            return
+
+        def done(data):
+            self._resolved = (0, False)
+            if "error" in data:
+                QMessageBox.warning(self.window, APP, tr("No se pudo activar systemd-resolved:\n\n") + data["error"])
+                return
+            meta.pop("dns_declined", None)
+            self.settings.set_conn(name, meta)
+            self._notify(tr("systemd-resolved activado: el DNS de la VPN ya puede funcionar."), "up")
+            if then:
+                then()
+
+        self._notify(tr("Instalando y activando systemd-resolved…"), "connecting")
+        self.helper.run(["dns-setup"], done)
 
     def _dns_problem(self, name, error):
         self.dns_retry[name] = time.time() + 120
@@ -5220,6 +5282,8 @@ class SwanGUI(QObject):
         mode = self.settings.conn(name).get("dns_mode", "none")
         if mode == "none":
             return tr("DNS local")
+        if not self.resolved_ok():
+            return tr("DNS local (falta systemd-resolved)")
         text = tr("Dividido") if mode == "split" else tr("Todo por la VPN")
         doms = self.settings.conn(name).get("dns_domains", [])
         if name in self.status.get("dns", []):
@@ -5360,6 +5424,10 @@ class SwanGUI(QObject):
         if not name or name in self.busy:
             return
         meta = self.settings.conn(name)
+        if meta.get("dns_mode", "none") != "none" and not self.resolved_ok() and not meta.get("dns_declined") \
+                and not auto:
+            self._offer_resolved(name, then=lambda: self.connect_vpn(name))
+            return
         pw = self.password_for(name, interactive=True)
         if pw is False:
             return
@@ -5370,7 +5438,10 @@ class SwanGUI(QObject):
             opts["timeout"] = 120
             self._notify(tr("{0}: aprueba la conexión en tu móvil (FortiToken)").format(name), "connecting", 15000)
         if meta.get("dns_mode", "none") != "none":
-            opts["dns"] = self._dns_cfg(name)
+            if self.resolved_ok():
+                opts["dns"] = self._dns_cfg(name)
+            else:
+                self._notify(tr("{0}: se conecta sin el DNS de la VPN porque falta systemd-resolved. Los nombres internos no se resolverán; actívalo en Editar → Avanzada → DNS.").format(name), "connecting", 10000)
         if meta.get("killswitch"):
             opts["killswitch"] = {"allow_lan": meta.get("killswitch_lan", True),
                                   "forward": meta.get("killswitch_fwd", True)}
@@ -5520,6 +5591,8 @@ class SwanGUI(QObject):
             else:
                 saved = data.get("name", name)
                 self.settings.set_conn(saved, meta, old_name=orig)
+                if meta.get("dns_mode", "none") != "none" and not self.resolved_ok():
+                    QTimer.singleShot(0, lambda: self._offer_resolved(saved))
                 try:
                     if keyring_pw is not None:
                         Keyring.set(saved, keyring_pw)
@@ -5814,7 +5887,9 @@ def cli(args):
                 if meta.get("otp") == "append":
                     pw += input(tr("Código OTP: ")).strip()
                 opts["password"] = pw
-            if meta.get("dns_mode", "none") != "none":
+            if meta.get("dns_mode", "none") != "none" and not resolved_ready():
+                print(tr("Aviso: falta systemd-resolved; se conecta sin el DNS de la VPN."), file=sys.stderr)
+            elif meta.get("dns_mode", "none") != "none":
                 opts["dns"] = {"mode": meta["dns_mode"], "domains": meta.get("dns_domains", []),
                                "servers": meta.get("dns_servers", [])}
             if meta.get("killswitch"):

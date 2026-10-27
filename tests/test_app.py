@@ -55,11 +55,23 @@ class AppStartTests(unittest.TestCase):
         for part in ("10.9.0.2", "203.0.113.5", "1:02:05", "5.0 MiB", "10.0.0.53", "corp.example", "10.0.0.54",
                      "2:00:00", "0:10:00", g.tr("Buena"), g.COLORS["up"]):
             self.assertIn(part, text)
+        app._resolved = (g.time.monotonic(), True)   # don't depend on the test machine
         self.assertEqual(app.dns_summary("office"), g.tr("DNS local"))
         app.settings.data["connections"]["office"] = {"dns_mode": "split", "dns_domains": ["corp.example"]}
         self.assertEqual(app.dns_summary("office"), g.tr("Dividido") + " · 10.0.0.53 (corp.example) ✓")
         app.settings.data["connections"]["office"] = {"dns_mode": "all"}
         self.assertEqual(app.dns_summary("office"), g.tr("Todo por la VPN") + " · 10.0.0.53 ✓")
+        app._resolved = (g.time.monotonic(), False)  # no systemd-resolved: no VPN DNS, and it says why
+        self.assertEqual(app.dns_summary("office"), g.tr("DNS local (falta systemd-resolved)"))
+        # "Ahora no": remembered for this connection, the connection goes on without the VPN DNS
+        app.settings.data["connections"]["office"] = {"dns_mode": "split", "dns_domains": ["corp.example"]}
+        calls = []
+        from unittest import mock
+        with mock.patch.object(g.QMessageBox, "exec", lambda self: 0):
+            app._offer_resolved("office", then=lambda: calls.append("connect"))
+        self.assertTrue(app.settings.conn("office").get("dns_declined"))
+        self.assertEqual(calls, ["connect"])
+        app._resolved = (g.time.monotonic(), True)
         app.settings.data["connections"].pop("office")
         g.TrayPopup.spot = None
         self.assertNotEqual(app.tray.toolTip(), "")
