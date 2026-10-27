@@ -40,27 +40,27 @@ Descarga el paquete de tu distribución desde la [última versión](https://gith
 
 | Distribución | Paquete |
 |---|---|
-| Debian 12+ / Ubuntu 24.04+ | [swangui_1.0.6-1_all.deb](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.6/swangui_1.0.6-1_all.deb) |
-| Fedora | [swangui-1.0.6-1.fc44.noarch.rpm](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.6/swangui-1.0.6-1.fc44.noarch.rpm) |
-| Arch Linux, CachyOS, Manjaro, EndeavourOS | [swangui-1.0.6-1-any.pkg.tar.zst](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.6/swangui-1.0.6-1-any.pkg.tar.zst) · [PKGBUILD](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.6/PKGBUILD) |
-| Sumas de verificación | [SHA256SUMS](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.6/SHA256SUMS) |
+| Debian 12+ / Ubuntu 24.04+ | [swangui_1.0.7-1_all.deb](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.7/swangui_1.0.7-1_all.deb) |
+| Fedora | [swangui-1.0.7-1.fc44.noarch.rpm](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.7/swangui-1.0.7-1.fc44.noarch.rpm) |
+| Arch Linux, CachyOS, Manjaro, EndeavourOS | [swangui-1.0.7-1-any.pkg.tar.zst](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.7/swangui-1.0.7-1-any.pkg.tar.zst) · [PKGBUILD](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.7/PKGBUILD) |
+| Sumas de verificación | [SHA256SUMS](https://github.com/FrankMncrf/SwanGUI/releases/download/v1.0.7/SHA256SUMS) |
 
 ### Debian / Ubuntu
 
 ```sh
-sudo apt install ./swangui_1.0.6-1_all.deb
+sudo apt install ./swangui_1.0.7-1_all.deb
 ```
 
 ### Fedora
 
 ```sh
-sudo dnf install ./swangui-1.0.6-1.fc44.noarch.rpm
+sudo dnf install ./swangui-1.0.7-1.fc44.noarch.rpm
 ```
 
 ### Arch Linux y derivadas
 
 ```sh
-sudo pacman -U swangui-1.0.6-1-any.pkg.tar.zst
+sudo pacman -U swangui-1.0.7-1-any.pkg.tar.zst
 ```
 
 O constrúyelo tú con el `PKGBUILD`: `makepkg -si`. Pronto también en AUR (`yay -S swangui`).
@@ -72,7 +72,7 @@ git clone https://github.com/FrankMncrf/SwanGUI.git && cd SwanGUI
 ./install.sh            # instala en /usr/local (pide sudo)
 ```
 
-**Requisitos:** strongSwan con `swanctl` y el servicio `strongswan` (charon-systemd), Python 3.10+, PyQt6, polkit con un agente de autenticación en el escritorio, nftables, iproute2 y systemd-resolved (para DNS dividido). Opcionales: python-cryptography (exportaciones cifradas), libsecret/secret-tool (llavero) y NetworkManager (redes de confianza, portales cautivos).
+**Requisitos:** strongSwan con `swanctl` y el servicio `strongswan` (charon-systemd), Python 3.10+, PyQt6, polkit con un agente de autenticación en el escritorio, nftables, iproute2, systemd-resolved (DNS dividido), python-cryptography (exportaciones cifradas), libsecret/secret-tool (llavero) y NetworkManager (redes de confianza, portales cautivos). Los paquetes `.deb`, `.rpm` y de Arch instalan todo esto automáticamente.
 
 ## Uso
 

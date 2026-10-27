@@ -4,8 +4,7 @@ Architecture: all
 Section: net
 Priority: optional
 Maintainer: Frank <frank@swangui.invalid>
-Depends: python3 (>= 3.10), python3-pyqt6, strongswan-swanctl, charon-systemd, polkitd | policykit-1, nftables, iproute2, openssl, iputils-ping
-Recommends: systemd-resolved, python3-cryptography, libsecret-tools, network-manager
+Depends: python3 (>= 3.10), python3-pyqt6, strongswan-swanctl, charon-systemd, polkitd | policykit-1, nftables, iproute2, openssl, iputils-ping, systemd-resolved, python3-cryptography, libsecret-tools, network-manager
 Homepage: https://github.com/FrankMncrf/SwanGUI
 Description: FortiClient-style IPsec VPN client for strongSwan
  Tray application to create, edit, import/export, connect and monitor

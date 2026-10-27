@@ -1,5 +1,5 @@
 Name:           swangui
-Version:        1.0.6
+Version:        1.0.7
 Release:        1%{?dist}
 Summary:        FortiClient-style IPsec VPN client for strongSwan
 License:        GPL-3.0-or-later
@@ -15,10 +15,10 @@ Requires:       nftables
 Requires:       iproute
 Requires:       openssl
 Requires:       iputils
-Recommends:     python3-cryptography
-Recommends:     libsecret
-Recommends:     NetworkManager
-Recommends:     systemd-resolved
+Requires:       python3-cryptography
+Requires:       libsecret
+Requires:       NetworkManager
+Requires:       systemd-resolved
 
 %description
 Tray application to create, edit, import/export, connect and monitor
@@ -46,6 +46,9 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix} LIBDIR=%{_prefix}/lib/swangu
 %{_licensedir}/%{name}/
 
 %changelog
+* Tue Oct 27 2026 Frank <frank@swangui.invalid> - 1.0.7-1
+- All dependencies are required: python3-cryptography, libsecret, NetworkManager, systemd-resolved
+
 * Tue Oct 27 2026 Frank <frank@swangui.invalid> - 1.0.6-1
 - TCP MSS clamping for traffic through the tunnel (fixes stalled connections)
 - Total traffic no longer resets when the CHILD_SA is rekeyed

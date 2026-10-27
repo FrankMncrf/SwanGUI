@@ -1,5 +1,11 @@
 # Novedades
 
+## 1.0.7 — 2026-10-27
+
+- Los paquetes instalan **todas** las dependencias, sin opcionales: python-cryptography (exportaciones cifradas), libsecret (llavero), NetworkManager (redes de confianza y portales cautivos) y systemd-resolved (DNS de la VPN); en Arch también polkit-gnome (agente de autenticación).
+- `install.sh` (instalación desde el código) instala las dependencias que falten con apt, dnf o pacman; `--no-deps` lo evita.
+- En Debian, systemd-resolved no viene de serie: al instalar SwanGUI pasa a gestionar el DNS del sistema.
+
 ## 1.0.6 — 2026-10-27
 
 - **Conexiones que se quedaban colgadas por la VPN**: el cifrado añade bytes a cada paquete y los más grandes ya no caben en el túnel; si la red bloquea el aviso que lo indica, una web o una copia de archivos se detiene a mitad. SwanGUI ahora ajusta el tamaño de los paquetes TCP (MSS 1360) solo para el tráfico que va por la VPN. Se puede desactivar por conexión en Editar → Avanzada → Configuración VPN.
