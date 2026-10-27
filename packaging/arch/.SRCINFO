@@ -15,11 +15,11 @@ pkgbase = swangui
 	depends = systemd
 	depends = openssl
 	depends = iputils
-	optdepends = python-cryptography: password-protected exports
-	optdepends = libsecret: keep user passwords in the system keyring
-	optdepends = networkmanager: trusted networks and captive portal detection
-	optdepends = polkit-gnome: authentication agent for desktops without one
+	depends = python-cryptography
+	depends = libsecret
+	depends = networkmanager
+	depends = polkit-gnome
 	source = swangui-1.0.7.tar.gz::https://github.com/FrankMncrf/SwanGUI/archive/refs/tags/v1.0.7.tar.gz
-	sha256sums = d36610946245c304b6751b621a62a160c6a8442a5f59a27e1da3918fad2b1ed7
+	sha256sums = 41ec56cd80f44aae8afda273bc5e69d06e31624c440fc965501cb4ec60a53f83
 
 pkgname = swangui

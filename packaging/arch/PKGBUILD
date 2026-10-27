@@ -10,7 +10,7 @@ depends=('python' 'python-pyqt6' 'strongswan' 'polkit' 'nftables' 'iproute2' 'sy
          'python-cryptography' 'libsecret' 'networkmanager' 'polkit-gnome')
 checkdepends=('python-cryptography')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('d36610946245c304b6751b621a62a160c6a8442a5f59a27e1da3918fad2b1ed7')
+sha256sums=('41ec56cd80f44aae8afda273bc5e69d06e31624c440fc965501cb4ec60a53f83')
 
 check() {
     cd "SwanGUI-$pkgver"
