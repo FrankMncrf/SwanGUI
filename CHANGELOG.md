@@ -1,5 +1,9 @@
 # Novedades
 
+## 1.0.4 — 2026-10-26
+
+- Los errores de SwanGUI quedan ahora también en el registro del sistema, para poder diagnosticarlos después. Incluye el caso de una VPN que conecta pero cuyo DNS no se aplica, que antes solo se veía en la notificación. Para verlos: `journalctl -t swangui-helper -p warning`.
+
 ## 1.0.3 — 2026-10-26
 
 - Ya no aparece la ventana de contraseña de administrador al volver de una suspensión: SwanGUI deja de consultar el estado de la VPN mientras el equipo se suspende o la sesión no está activa, y reanuda las consultas al despertar.
