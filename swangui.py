@@ -4061,7 +4061,7 @@ class Help(QObject):
         box.setIconPixmap(shield_icon("up", 96).pixmap(96, 96))
         box.setText(f"<h2>SwanGUI {VERSION}</h2>"
                     + tr("<p>Cliente VPN IPsec para strongSwan, al estilo de FortiClient.</p>")
-                    + f"<p>© 2026 Frank — <a href='{REPO_URL}'>{REPO_URL.replace('https://', '')}</a></p>"
+                    + f"<p>© 2026 FrankMncrf — <a href='{REPO_URL}'>{REPO_URL.replace('https://', '')}</a></p>"
                     + tr("<p>Software libre bajo la licencia GPL-3.0. Sin ninguna garantía.</p>"))
         box.setTextFormat(Qt.TextFormat.RichText)
         donate = box.addButton(tr("Donar…"), QMessageBox.ButtonRole.ActionRole)

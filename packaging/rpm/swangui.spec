@@ -46,32 +46,32 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix} LIBDIR=%{_prefix}/lib/swangu
 %{_licensedir}/%{name}/
 
 %changelog
-* Tue Oct 27 2026 Frank <frank@swangui.invalid> - 1.0.8-1
+* Tue Oct 27 2026 FrankMncrf <frank@swangui.invalid> - 1.0.8-1
 - Offer to install and enable systemd-resolved when the VPN DNS needs it
 
-* Tue Oct 27 2026 Frank <frank@swangui.invalid> - 1.0.7-1
+* Tue Oct 27 2026 FrankMncrf <frank@swangui.invalid> - 1.0.7-1
 - All dependencies are required: python3-cryptography, libsecret, NetworkManager, systemd-resolved
 
-* Tue Oct 27 2026 Frank <frank@swangui.invalid> - 1.0.6-1
+* Tue Oct 27 2026 FrankMncrf <frank@swangui.invalid> - 1.0.6-1
 - TCP MSS clamping for traffic through the tunnel (fixes stalled connections)
 - Total traffic no longer resets when the CHILD_SA is rekeyed
 
-* Tue Oct 27 2026 Frank <frank@swangui.invalid> - 1.0.5-1
+* Tue Oct 27 2026 FrankMncrf <frank@swangui.invalid> - 1.0.5-1
 - Narrower main window, traffic graph with time ranges, axes and grid
 - Graph data of the current session survives restarts (last hour only)
 - Latency measured against the VPN DNS when the first remote host does not answer ping
 
-* Mon Oct 26 2026 Frank <frank@swangui.invalid> - 1.0.4-1
+* Mon Oct 26 2026 FrankMncrf <frank@swangui.invalid> - 1.0.4-1
 - Helper errors, including DNS failures while connecting, go to the system journal
 
-* Mon Oct 26 2026 Frank <frank@swangui.invalid> - 1.0.3-1
+* Mon Oct 26 2026 FrankMncrf <frank@swangui.invalid> - 1.0.3-1
 - No password prompt after suspend; new Buy Me a Coffee link
 
-* Sun Oct 25 2026 Frank <frank@swangui.invalid> - 1.0.2-1
+* Sun Oct 25 2026 FrankMncrf <frank@swangui.invalid> - 1.0.2-1
 - Connection details card when hovering over the tray icon
 
-* Sun Oct 25 2026 Frank <frank@swangui.invalid> - 1.0.1-1
+* Sun Oct 25 2026 FrankMncrf <frank@swangui.invalid> - 1.0.1-1
 - Own notification bubble next to the tray icon
 
-* Sun Oct 25 2026 Frank <frank@swangui.invalid> - 1.0.0-1
+* Sun Oct 25 2026 FrankMncrf <frank@swangui.invalid> - 1.0.0-1
 - First public release

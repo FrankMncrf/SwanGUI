@@ -3,7 +3,7 @@ Version: @VERSION@-1
 Architecture: all
 Section: net
 Priority: optional
-Maintainer: Frank <frank@swangui.invalid>
+Maintainer: FrankMncrf <frank@swangui.invalid>
 Depends: python3 (>= 3.10), python3-pyqt6, strongswan-swanctl, charon-systemd, polkitd | policykit-1, nftables, iproute2, openssl, iputils-ping, python3-cryptography, libsecret-tools, network-manager
 Suggests: systemd-resolved
 Homepage: https://github.com/FrankMncrf/SwanGUI
