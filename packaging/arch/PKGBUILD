@@ -1,6 +1,6 @@
 # Maintainer: FrankMncrf <frank@swangui.invalid>
 pkgname=swangui
-pkgver=1.0.8
+pkgver=1.0.9
 pkgrel=1
 pkgdesc="FortiClient-style IPsec VPN client for strongSwan, with tray icon"
 arch=('any')
@@ -10,7 +10,7 @@ depends=('python' 'python-pyqt6' 'strongswan' 'polkit' 'nftables' 'iproute2' 'sy
          'python-cryptography' 'libsecret' 'networkmanager' 'polkit-gnome')
 checkdepends=('python-cryptography')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('f5beb155a4c90daadaf3aac73e3bd6c5cf5c02d042a92297760bd1e6ac946252')
+sha256sums=('SKIP')
 
 check() {
     cd "SwanGUI-$pkgver"

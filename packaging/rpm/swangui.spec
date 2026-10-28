@@ -1,5 +1,5 @@
 Name:           swangui
-Version:        1.0.8
+Version:        1.0.9
 Release:        1%{?dist}
 Summary:        FortiClient-style IPsec VPN client for strongSwan
 License:        GPL-3.0-or-later
@@ -46,6 +46,9 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix} LIBDIR=%{_prefix}/lib/swangu
 %{_licensedir}/%{name}/
 
 %changelog
+* Wed Oct 28 2026 FrankMncrf <frank@swangui.invalid> - 1.0.9-1
+- Author shown as FrankMncrf in About and in the packages
+
 * Tue Oct 27 2026 FrankMncrf <frank@swangui.invalid> - 1.0.8-1
 - Offer to install and enable systemd-resolved when the VPN DNS needs it
 

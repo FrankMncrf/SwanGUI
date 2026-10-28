@@ -1,5 +1,9 @@
 # Novedades
 
+## 1.0.9 — 2026-10-28
+
+- El autor aparece como **FrankMncrf** en Acerca de y en los paquetes.
+
 ## 1.0.8 — 2026-10-27
 
 - **systemd-resolved solo con tu permiso**: el paquete de Debian ya no lo instala por su cuenta, porque pasa a gestionar el DNS del sistema. La primera vez que una conexión usa el DNS de la VPN, SwanGUI pregunta si instalarlo y activarlo (pide la contraseña de administrador). Funciona igual en Debian, Ubuntu, Fedora y Arch, donde viene instalado pero desactivado.
