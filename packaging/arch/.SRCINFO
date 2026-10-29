@@ -20,6 +20,6 @@ pkgbase = swangui
 	depends = networkmanager
 	depends = polkit-gnome
 	source = swangui-1.0.10.tar.gz::https://github.com/FrankMncrf/SwanGUI/archive/refs/tags/v1.0.10.tar.gz
-	sha256sums = b362b33ced1ff4c3e99be1abb0ab100863acdf69a065cd518205a0b43fcbf537
+	sha256sums = fc8f5f4c0aa8adaa29e28029b6e56febb2cdf4e13ed671853b41ea3cf8276537
 
 pkgname = swangui
