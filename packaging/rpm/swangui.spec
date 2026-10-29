@@ -1,5 +1,5 @@
 Name:           swangui
-Version:        1.0.9
+Version:        1.0.10
 Release:        1%{?dist}
 Summary:        FortiClient-style IPsec VPN client for strongSwan
 License:        GPL-3.0-or-later
@@ -46,6 +46,12 @@ make install DESTDIR=%{buildroot} PREFIX=%{_prefix} LIBDIR=%{_prefix}/lib/swangu
 %{_licensedir}/%{name}/
 
 %changelog
+* Thu Oct 29 2026 FrankMncrf <frank@swangui.invalid> - 1.0.10-1
+- FortiClient 7.4 import: encrypted EncX keys are no longer saved as the PSK
+- New PSKs without IDs are bound to the gateway IP; per-connection VPN DNS
+- Hints for strongSwan without IKEv1 and for IKEv1 Main/Aggressive Mode
+- Resizable columns, remote networks in Details, list shows five connections
+
 * Wed Oct 28 2026 FrankMncrf <frank@swangui.invalid> - 1.0.9-1
 - Author shown as FrankMncrf in About and in the packages
 

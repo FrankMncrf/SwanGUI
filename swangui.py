@@ -3684,7 +3684,7 @@ class LogWindow(QDialog):
 # help menu: about, project links, bug reports, donations, updates
 # ---------------------------------------------------------------------------
 
-VERSION = "1.0.9"
+VERSION = "1.0.10"
 REPO_URL = "https://github.com/FrankMncrf/SwanGUI"
 RELEASES_API = "https://api.github.com/repos/FrankMncrf/SwanGUI/releases/latest"
 # donation targets; an empty value hides that option
@@ -4366,14 +4366,14 @@ class MainWindow(QMainWindow):
         dl.addLayout(form, 0)
         dl.addLayout(graph_box, 1)
 
-        # room for about three connections; more scroll
+        # room for about five connections; more scroll
         rows = self.tree.fontMetrics().height() + 8
         self.tree.setMinimumHeight(rows * 2 + 24)
         split = QSplitter(Qt.Orientation.Vertical)
         split.addWidget(self.tree)
         split.addWidget(details)
         split.setStretchFactor(1, 1)
-        split.setSizes([rows * 3 + 30, 260])
+        split.setSizes([rows * 5 + 30, 260])
         conns = QWidget()
         cl = QVBoxLayout(conns)
         cl.addWidget(split)
@@ -4416,7 +4416,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.status)
         self.setCentralWidget(central)
         self.update_actions()
-        self.resize(max(600, self.minimumSizeHint().width()), 520)
+        self.resize(max(600, self.minimumSizeHint().width()), 600)
 
     def _action(self, text, slot, shortcut=None):
         a = QAction(text, self)

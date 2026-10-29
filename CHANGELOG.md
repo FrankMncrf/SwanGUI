@@ -1,5 +1,16 @@
 # Novedades
 
+## 1.0.10 — 2026-10-29
+
+- **VPN IKEv1 de FortiGate (clave precompartida + usuario XAuth)**:
+  - Al importar un archivo de FortiClient 7.4, las claves cifradas (`EncX …`) ya no se guardan como clave precompartida: SwanGUI avisa de que hay que escribirla.
+  - Una clave precompartida nueva sin ID local ni remoto se asocia a la IP del gateway. Con dos VPN de este tipo, strongSwan podía usar la clave de la otra y fallar con «calculated HASH does not match».
+  - Explicaciones nuevas cuando falla la conexión: strongSwan compilado sin IKEv1 (desde la 6.0 no viene por defecto), servidor que no contesta a Main Mode (prueba Aggressive) y Aggressive Mode con clave precompartida desactivado en strongSwan.
+- **DNS de la VPN**: con dos VPN conectándose a la vez, cada una usa los servidores que le envió su gateway (antes se podían mezclar). Si el DNS no responde justo al conectar, se vuelve a probar.
+- Las columnas de Conexiones e Historial se pueden **ajustar con el ratón** y se recuerda el ancho; doble clic en el borde las vuelve a ajustar al contenido.
+- **Detalles muestra las redes remotas** de la conexión seleccionada.
+- La lista de conexiones muestra **cinco** conexiones sin desplazarse (antes tres).
+
 ## 1.0.9 — 2026-10-28
 
 - El autor aparece como **FrankMncrf** en Acerca de y en los paquetes.
