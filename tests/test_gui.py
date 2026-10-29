@@ -45,6 +45,13 @@ class FortiTests(unittest.TestCase):
 
 
 @unittest.skipUnless(g.crypto_available(), "python-cryptography not installed")
+class FortiSecretTests(unittest.TestCase):
+    def test_encrypted_secrets_dropped(self):
+        self.assertEqual(g._forti_secret("EncX 1A2B"), "")
+        self.assertEqual(g._forti_secret("Enc 1A2B"), "")
+        self.assertEqual(g._forti_secret("Encore123"), "Encore123")
+
+
 class EncryptedExportTests(unittest.TestCase):
     def test_roundtrip(self):
         enc = g.encrypt_export(SAMPLE, "correct horse")
@@ -69,6 +76,9 @@ class EncryptedExportTests(unittest.TestCase):
 class ExplainTests(unittest.TestCase):
     def test_phase_hints(self):
         self.assertTrue(g.explain("received NO_PROPOSAL_CHOSEN notify error"))
+        self.assertTrue(g.explain("IKE version 1 not supported"))
+        self.assertTrue(g.explain("initiating Main Mode IKE_SA x[1] to 1.2.3.4\n"
+                                  "sending retransmit 1 of request message ID 0, seq 1"))
         self.assertEqual(g.explain("nothing interesting"), [])
 
 

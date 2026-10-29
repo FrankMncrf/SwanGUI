@@ -76,6 +76,21 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(conn["children"]["office"]["mark_in"], "42")
 
 
+class VpnDnsServersTests(unittest.TestCase):
+    def test_new_ikev1_sa_resets_servers(self):
+        log = ("initiating Aggressive Mode IKE_SA office[1] to 1.2.3.4\ninstalling DNS server 9.9.9.9 via resolvconf\n"
+               "initiating Aggressive Mode IKE_SA office[2] to 1.2.3.4\ninstalling DNS server 10.8.0.1 via resolvconf\n")
+        self.assertEqual(h.vpn_dns_servers("office", log), ["10.8.0.1"])
+
+
+class PskOwnerTests(unittest.TestCase):
+    def test_owner(self):
+        self.assertEqual(h.psk_owner("me@x", "gw", "1.2.3.4"), "me@x")
+        self.assertEqual(h.psk_owner("", "gw.example.com", "1.2.3.4"), "gw.example.com")
+        self.assertEqual(h.psk_owner("", "%any", "203.0.113.7"), "203.0.113.7")
+        self.assertEqual(h.psk_owner("", "%any", "vpn.example.com"), "")
+
+
 class SecurityTests(unittest.TestCase):
     def test_names(self):
         for ok in ("office", "a", "vpn-2.lab_x"):
@@ -170,7 +185,7 @@ class MssTests(unittest.TestCase):
 
     def test_removed_with_the_last_tunnel(self):
         from unittest import mock
-        with mock.patch.object(h, "run_swanctl", return_value=(0, "neocom: #1, ESTABLISHED, IKEv2, a_i* b_r")):
+        with mock.patch.object(h, "run_swanctl", return_value=(0, "office: #1, ESTABLISHED, IKEv2, a_i* b_r")):
             self.assertTrue(h.active_sas())
         with mock.patch.object(h, "run_swanctl", return_value=(0, "")):
             self.assertFalse(h.active_sas())

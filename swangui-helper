@@ -296,6 +296,18 @@ def run_swanctl(*args, timeout=60):
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
+def ikev1_unsupported_note(conn, since="-2min"):
+    """charon logs "IKE version 1 not supported" only to its own log, not to the vici stream."""
+    if str(conn.get("version", "2")) != "1":
+        return ""
+    try:
+        p = subprocess.run(["journalctl", "-u", "strongswan", "--since", since, "-o", "cat", "--no-pager",
+                            "-g", "IKE version 1 not supported"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return "\nIKE version 1 not supported" if p.stdout.strip() else ""
+
+
 def reload_all():
     code, out = run_swanctl("--load-all", "--noprompt")
     if code != 0:
@@ -327,6 +339,21 @@ def find_secret(secrets, kind, name, ids):
         if len(cands) == 1:
             return cands[0]
     return None
+
+
+def psk_owner(lid, rid, remote_addrs):
+    """Identity a new PSK is bound to. Two wildcard PSKs (two dial-up VPNs) make charon pick
+    either one, so fall back to the gateway when it is a literal IP (FortiGate sends it as its ID)."""
+    if lid:
+        return lid
+    if rid not in ("", "%any"):
+        return rid
+    gw = remote_addrs.split(",")[0].strip()
+    try:
+        ipaddress.ip_address(gw)
+    except ValueError:
+        return ""
+    return gw
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +564,7 @@ def cmd_write(v):
         if key is None:
             key = f"ike-{name}"
             secrets[key] = {}
-            owner = lid or (rid if rid not in ("", "%any") else "")
+            owner = psk_owner(lid, rid, v.get("remote_addrs", ""))
             if owner:
                 secrets[key]["id"] = owner
         secrets[key]["secret"] = v["psk"]
@@ -732,7 +759,8 @@ def cmd_up(name, opts=None):
             log_error(["up", name, "mss"], e)
     code, out = run_swanctl(*args, timeout=timeout + 15)
     if code != 0:
-        raise HelperError(out or tr("No se pudo establecer la conexión"))
+        out += ikev1_unsupported_note(conn)
+        raise HelperError(out.strip() or tr("No se pudo establecer la conexión"))
     result = {"ok": True, "log": out}
     dns = opts.get("dns") or {}
     if dns.get("mode") in ("split", "all"):
@@ -793,12 +821,15 @@ def vpn_dns_servers(name, initiate_log=""):
     """DNS servers pushed by the gateway (Mode Config), from charon's log."""
     text = initiate_log
     if "installing DNS server" not in text:
-        p = subprocess.run(["journalctl", "-u", "strongswan", "--since", "-12h", "-o", "cat", "--no-pager"],
-                           capture_output=True, text=True, timeout=20)
+        # charon-systemd tags each line with IKE_SA_NAME: without it, VPNs connecting at the
+        # same time mix their servers
+        p = subprocess.run(["journalctl", "-u", "strongswan", f"IKE_SA_NAME={name}", "--since", "-12h",
+                            "-o", "cat", "--no-pager"], capture_output=True, text=True, timeout=20)
         text = p.stdout
     servers = []
+    start = re.compile(rf"initiating (?:\w+ Mode )?IKE_SA {re.escape(name)}\[")
     for line in text.splitlines():
-        if f"initiating IKE_SA {name}[" in line:
+        if start.search(line):
             servers = []
         m = re.search(r"installing DNS server (\S+)", line)
         if m and m.group(1) not in servers:
@@ -893,6 +924,10 @@ def dns_apply(name, cfg, initiate_log=""):
     # A gateway that pushes a dead DNS server (it happens) would leave these
     # domains, or with mode "all" every name, unresolvable: keep the local DNS.
     alive = probe_dns(servers, v4, v6)
+    if not any(alive.values()):
+        # right after the CHILD_SA comes up the first packets can get lost: try once more
+        time.sleep(2)
+        alive = probe_dns(servers, v4, v6)
     dead = [srv for srv, ok in alive.items() if not ok]
     servers = [srv for srv, ok in alive.items() if ok]
     if not servers:
@@ -1341,6 +1376,8 @@ def cmd_diagnose(name, opts):
         child = v["child_name"]
         code, out = run_swanctl("--initiate", "--child", child, "--ike", name, "--timeout", "30",
                                 "--loglevel", "2", timeout=45)
+        if code != 0:
+            out += ikev1_unsupported_note(v)
         steps.append({"title": tr("Conexión de prueba"), "ok": code == 0, "detail": "",
                       "hint": "", "log": out})
         if code == 0 and not opts.get("keep"):

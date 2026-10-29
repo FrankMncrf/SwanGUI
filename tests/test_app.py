@@ -240,3 +240,24 @@ class FindIconTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ColumnWidthsTests(unittest.TestCase):
+    def test_columns_resizable_and_remembered(self):
+        from PyQt6.QtWidgets import QApplication, QHeaderView, QTreeWidget, QTreeWidgetItem
+        QApplication.instance() or QApplication([])
+        tmp = tempfile.mkdtemp()
+        g.SETTINGS_PATH = os.path.join(tmp, "swangui", "settings.json")
+        settings = g.Settings()
+        tree = QTreeWidget()
+        tree.setHeaderLabels(["a", "b", "c"])
+        cols = g.ColumnWidths(tree, settings, "t")
+        self.assertEqual(tree.header().sectionResizeMode(0), QHeaderView.ResizeMode.Interactive)
+        tree.addTopLevelItem(QTreeWidgetItem(["x" * 40, "y", "z"]))
+        cols.fit()
+        tree.setColumnWidth(1, 123)
+        cols.save()
+        again = QTreeWidget()
+        again.setHeaderLabels(["a", "b", "c"])
+        g.ColumnWidths(again, g.Settings(), "t")
+        self.assertEqual(again.columnWidth(1), 123)

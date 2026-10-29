@@ -348,6 +348,37 @@ def set_combo(c, val):
     c.setCurrentIndex(i)
 
 
+class ColumnWidths:
+    """Columns the user can drag; fitted to the content once, then the chosen widths are kept."""
+
+    def __init__(self, tree, settings, key):
+        self.tree, self.settings, self.key = tree, settings, key
+        self.fitted = False
+        header = tree.header()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        saved = settings.data.get("column_widths", {}).get(key)
+        if saved:
+            for i, w in enumerate(saved[:tree.columnCount() - 1]):
+                tree.setColumnWidth(i, w)
+            self.fitted = True
+        self.timer = QTimer(tree, singleShot=True, interval=800, timeout=self.save)
+        header.sectionResized.connect(lambda *_: self.fitted and self.timer.start())
+
+    def fit(self):
+        """Call after filling the tree: fits the columns once, the first time there are rows."""
+        if self.fitted or not self.tree.topLevelItemCount():
+            return
+        for i in range(self.tree.columnCount() - 1):
+            self.tree.resizeColumnToContents(i)
+        self.fitted = True
+
+    def save(self):
+        widths = [self.tree.columnWidth(i) for i in range(self.tree.columnCount() - 1)]
+        self.settings.data.setdefault("column_widths", {})[self.key] = widths
+        self.settings.save()
+
+
 def spin(maximum, suffix, special=tr("Por defecto")):
     s = QSpinBox()
     s.setRange(0, maximum)
@@ -590,9 +621,9 @@ def _safe_name(text):
 
 
 def _forti_secret(text):
-    """FortiClient stores secrets as 'Enc <hex>' — those can't be recovered."""
+    """FortiClient stores secrets as 'Enc <hex>' (7.4: 'EncX <hex>') — those can't be recovered."""
     text = (text or "").strip()
-    return "" if text.lower().startswith("enc ") else text
+    return "" if re.match(r"(?i)encx? ", text) else text
 
 
 def _forti_rows(proposals, ike):
@@ -657,7 +688,7 @@ def forti_import(text):
             mode = "save" if (password and not prompt) else "prompt"
             if not prompt and not password:
                 warnings.append(tr("«{0}»: la contraseña de usuario está cifrada; se pedirá al conectar.").format(raw_name))
-            if not username and t(ike, "xauth/username").lower().startswith("enc "):
+            if not username and re.match(r"(?i)encx? ", t(ike, "xauth/username")):
                 warnings.append(tr("«{0}»: el usuario está cifrado; edita la conexión y escríbelo.").format(raw_name))
 
         dhs = [DH_BY_NUMBER[n] for n in re.split(r"[;,\s]+", t(ike, "dhgroup", "14"))
@@ -1994,10 +2025,16 @@ ERROR_HINTS = [
      tr("El servidor no pudo asignarte una IP virtual (sin direcciones libres o Mode Config mal configurado).")),
     (r"giving up after \d+ retransmits|peer not responding|retransmit \d+ of request",
      tr("El servidor no responde: comprueba el gateway, que tu red permita UDP 500/4500 y que la VPN esté habilitada en el servidor.")),
+    (r"Aggressive Mode PSK disabled",
+     tr("Aggressive Mode con clave precompartida está desactivado en strongSwan: crea /etc/strongswan.d/swangui-aggressive-psk.conf con «charon { i_dont_care_about_security_and_use_aggressive_mode_psk = yes }» y ejecuta «swanctl --reload-settings» (la clave queda más expuesta a ataques de diccionario).")),
+    (r"initiating Main Mode IKE_SA[\s\S]*retransmit \d+ of request message ID 0",
+     tr("El servidor no contesta a Main Mode: muchos FortiGate y Cisco con usuario (XAuth) usan Aggressive Mode. Prueba en Editar → Fase 1 → Modo «Aggressive».")),
     (r"unable to resolve|failed to resolve|resolving .* failed",
      tr("No se pudo resolver el nombre del gateway (problema de DNS o de internet).")),
     (r"INVALID_KE_PAYLOAD",
      tr("El servidor pidió otro grupo DH; si falla, marca en Fase 1 el grupo que usa el servidor.")),
+    (r"IKE version 1 not supported",
+     tr("Tu strongSwan se compiló sin IKEv1 (desde la 6.0 no viene por defecto): instala un paquete compilado con --enable-ikev1 o usa IKEv2 si el servidor lo admite.")),
     (r"unable to install|unable to allocate SPI|kernel.*not supported",
      tr("El sistema no pudo instalar el túnel (módulos del kernel o permisos).")),
     (r"Autorización denegada|Authorization denied",
@@ -4232,8 +4269,7 @@ class MainWindow(QMainWindow):
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         self.tree.setIconSize(QSize(14, 14))
-        self.tree.header().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setStretchLastSection(True)
+        self.tree_cols = ColumnWidths(self.tree, app.settings, "connections")
         self.tree.itemSelectionChanged.connect(self.update_actions)
         self.tree.itemSelectionChanged.connect(self.update_details)
         self.tree.itemDoubleClicked.connect(lambda *_: self.toggle_selected())
@@ -4300,7 +4336,7 @@ class MainWindow(QMainWindow):
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(6)
         for key, label in (("state", tr("Estado")), ("vip", tr("IP virtual")), ("server", tr("Servidor")),
-                           ("since", tr("Inicio")), ("total", tr("Tráfico total")),
+                           ("nets", tr("Redes remotas")), ("since", tr("Inicio")), ("total", tr("Tráfico total")),
                            ("dns", "DNS"), ("ks", "Kill switch"), ("cert", tr("Certificado"))):
             self.d[key] = QLabel("—")
             self.d[key].setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -4349,7 +4385,7 @@ class MainWindow(QMainWindow):
                                    tr("IP virtual"), tr("Motivo")])
         self.hist.setRootIsDecorated(False)
         self.hist.setAlternatingRowColors(True)
-        self.hist.header().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.hist_cols = ColumnWidths(self.hist, app.settings, "history")
         self.hist_summary = QLabel()
         h_refresh = QPushButton(tr("Actualizar"))
         h_refresh.clicked.connect(self.load_history)
@@ -4444,6 +4480,9 @@ class MainWindow(QMainWindow):
         self.d["vip"].setText(", ".join(sa.get("vips", [])) or "—")
         self.d["server"].setText(f"{info.get('remote', '')}  ({sa['remote_host']})" if sa.get("remote_host")
                                  else info.get("remote", ""))
+        nets = [n.strip() for n in info.get("remote_ts", "").split(",") if n.strip()]
+        self.d["nets"].setText(", ".join(nets) + (tr(" (todo el tráfico)") if {"0.0.0.0/0", "::/0"} & set(nets) else "")
+                               if nets else "—")
         self.d["since"].setText(time.strftime("%d/%m %H:%M:%S", time.localtime(time.time() - sa["established"]))
                                 + f"  ({human_time(sa['established'])})" if st == "up" else "—")
         self.d["total"].setText(f"<span style='color:{RX_COLOR}'><b>↓</b></span> {human_bytes(sa['bytes_in'])}&nbsp;&nbsp;&nbsp;"
@@ -4505,6 +4544,7 @@ class MainWindow(QMainWindow):
         if self.tree.topLevelItemCount() and not self.tree.selectedItems():
             self.tree.topLevelItem(0).setSelected(True)
         self.tree.blockSignals(False)
+        self.tree_cols.fit()
         msgs = []
         if not status.get("daemon", True):
             msgs.append(tr("⚠ strongSwan (charon) no responde: ") + status.get("daemon_msg", ""))
@@ -4534,6 +4574,7 @@ class MainWindow(QMainWindow):
                 e.get("vip", ""), e.get("reason", ""),
             ])
             self.hist.addTopLevelItem(it)
+        self.hist_cols.fit()
         self.hist_summary.setText(f"{self.hist.topLevelItemCount()} sesiones · {human_time(total_time)} · "
                                   f"↓ {human_bytes(total_in)} · ↑ {human_bytes(total_out)}")
 
