@@ -4342,8 +4342,7 @@ class MainWindow(QMainWindow):
             self.d[key].setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             form.addRow(f"{label}:", self.d[key])
         self.graph = TrafficGraph()
-        self.graph.setMinimumWidth(180)
-        self.graph.setFixedHeight(162)
+        self.graph.setMinimumSize(180, 140)  # grows to the height of the data beside it
         self.span = QComboBox()
         for minutes, label in ((1, tr("Último minuto")), (10, tr("Últimos 10 min")), (30, tr("Últimos 30 min")),
                                (60, tr("Última hora"))):
@@ -4356,10 +4355,8 @@ class MainWindow(QMainWindow):
         span_row = QHBoxLayout()
         span_row.addStretch()
         span_row.addWidget(self.span)
-        graph_box.addStretch()
         graph_box.addLayout(span_row)
-        graph_box.addWidget(self.graph)
-        graph_box.addStretch()
+        graph_box.addWidget(self.graph, 1)
         details = QGroupBox(tr("Detalles"))
         dl = QHBoxLayout(details)
         dl.setSpacing(24)  # the graph takes the room the data leaves, with some air between them
